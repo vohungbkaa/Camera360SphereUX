@@ -1,0 +1,1046 @@
+import 'dart:async';
+import 'dart:io';
+import 'dart:math' as math;
+import 'package:flutter/material.dart';
+import 'package:flutter/services.dart';
+
+import 'server_session_client.dart';
+
+Future<void> main() async {
+  WidgetsFlutterBinding.ensureInitialized();
+  await SystemChrome.setPreferredOrientations(<DeviceOrientation>[
+    DeviceOrientation.portraitUp,
+  ]);
+  runApp(const SphereUxApp());
+}
+
+class SphereUxApp extends StatelessWidget {
+  const SphereUxApp({super.key});
+  @override
+  Widget build(BuildContext context) => MaterialApp(
+    debugShowCheckedModeBanner: false,
+    title: 'Sphere Capture',
+    theme: ThemeData(
+      brightness: Brightness.dark,
+      scaffoldBackgroundColor: const Color(0xFF07111F),
+      colorScheme: ColorScheme.fromSeed(
+        seedColor: const Color(0xFF67D5FF),
+        brightness: Brightness.dark,
+      ),
+      useMaterial3: true,
+    ),
+    home: const HomeScreen(),
+  );
+}
+
+// Kept as a compatibility alias for the template widget test.
+class MyApp extends SphereUxApp {
+  const MyApp({super.key});
+}
+
+class HomeScreen extends StatelessWidget {
+  const HomeScreen({super.key});
+  @override
+  Widget build(BuildContext context) => Scaffold(
+    body: SafeArea(
+      child: ListView(
+        padding: const EdgeInsets.fromLTRB(20, 18, 20, 32),
+        children: [
+          Row(
+            children: [
+              const Expanded(
+                child: Text(
+                  'Sphere',
+                  style: TextStyle(fontSize: 30, fontWeight: FontWeight.w800),
+                ),
+              ),
+              IconButton(
+                onPressed: () => _showHelp(context),
+                icon: const Icon(Icons.help_outline_rounded),
+              ),
+            ],
+          ),
+          const SizedBox(height: 14),
+          Container(
+            padding: const EdgeInsets.all(22),
+            decoration: BoxDecoration(
+              borderRadius: BorderRadius.circular(28),
+              gradient: const LinearGradient(
+                colors: [Color(0xFF12365E), Color(0xFF146C8C)],
+                begin: Alignment.topLeft,
+                end: Alignment.bottomRight,
+              ),
+            ),
+            child: Column(
+              crossAxisAlignment: CrossAxisAlignment.start,
+              children: [
+                const Icon(
+                  Icons.panorama_photosphere_rounded,
+                  size: 38,
+                  color: Color(0xFFB9F1FF),
+                ),
+                const SizedBox(height: 20),
+                const Text(
+                  'Tạo ảnh Sphere',
+                  style: TextStyle(fontSize: 27, fontWeight: FontWeight.w800),
+                ),
+                const SizedBox(height: 7),
+                const Text(
+                  'Đứng tại một điểm và ghi lại toàn bộ không gian 360°.',
+                  style: TextStyle(color: Color(0xD9FFFFFF), height: 1.35),
+                ),
+                const SizedBox(height: 22),
+                FilledButton.icon(
+                  onPressed: () => Navigator.push(
+                    context,
+                    MaterialPageRoute(builder: (_) => const CaptureScreen()),
+                  ),
+                  style: FilledButton.styleFrom(
+                    backgroundColor: Colors.white,
+                    foregroundColor: const Color(0xFF0A4965),
+                    padding: const EdgeInsets.symmetric(
+                      horizontal: 18,
+                      vertical: 14,
+                    ),
+                  ),
+                  icon: const Icon(Icons.camera_alt_rounded),
+                  label: const Text('Bắt đầu chụp'),
+                ),
+              ],
+            ),
+          ),
+          const SizedBox(height: 28),
+          const Text(
+            'Cách hoạt động',
+            style: TextStyle(fontSize: 19, fontWeight: FontWeight.w700),
+          ),
+          const SizedBox(height: 14),
+          const _Step(
+            icon: Icons.center_focus_strong_rounded,
+            title: 'Căn chấm mục tiêu',
+            body: 'Xoay điện thoại đến khi vòng tròn trùng với chấm sáng.',
+          ),
+          const _Step(
+            icon: Icons.panorama_horizontal_rounded,
+            title: 'Xoay quanh camera',
+            body:
+                'Giữ vị trí ống kính cố định; xoay người quanh điện thoại để giảm lỗi parallax.',
+          ),
+          const _Step(
+            icon: Icons.auto_awesome_rounded,
+            title: 'Xem Sphere tương tác',
+            body: 'Ứng dụng ghép các khung hình và mở ảnh 360°.',
+          ),
+          const SizedBox(height: 16),
+          const Text(
+            'Sphere gần đây',
+            style: TextStyle(fontSize: 19, fontWeight: FontWeight.w700),
+          ),
+          const SizedBox(height: 12),
+          Container(
+            padding: const EdgeInsets.all(16),
+            decoration: BoxDecoration(
+              color: const Color(0xFF101E30),
+              borderRadius: BorderRadius.circular(18),
+            ),
+            child: const Row(
+              children: [
+                CircleAvatar(
+                  backgroundColor: Color(0xFF1B3850),
+                  child: Icon(Icons.panorama, color: Color(0xFF9BE8FF)),
+                ),
+                SizedBox(width: 12),
+                Expanded(
+                  child: Text(
+                    'Chưa có Sphere nào\nTạo Sphere đầu tiên của bạn',
+                    style: TextStyle(color: Color(0xFFB7C5D8), height: 1.35),
+                  ),
+                ),
+              ],
+            ),
+          ),
+        ],
+      ),
+    ),
+  );
+  void _showHelp(BuildContext context) => showModalBottomSheet<void>(
+    context: context,
+    showDragHandle: true,
+    builder: (_) => const Padding(
+      padding: EdgeInsets.fromLTRB(24, 4, 24, 30),
+      child: Column(
+        mainAxisSize: MainAxisSize.min,
+        crossAxisAlignment: CrossAxisAlignment.start,
+        children: [
+          Text(
+            'Mẹo chụp Sphere',
+            style: TextStyle(fontSize: 21, fontWeight: FontWeight.w800),
+          ),
+          SizedBox(height: 14),
+          Text(
+            '• Đảm bảo đủ ánh sáng và tránh vật thể chuyển động gần camera.\n• Giữ ống kính tại một điểm cố định, xoay người quanh máy và không bước chân.\n• Tránh đứng quá gần cạnh tủ, cửa hoặc cửa sổ; nên cách ít nhất 1–1,5 m.\n• Nếu frame bị từ chối, giữ yên và quay lại đúng chấm để chụp lại.',
+          ),
+        ],
+      ),
+    ),
+  );
+}
+
+class _Step extends StatelessWidget {
+  const _Step({required this.icon, required this.title, required this.body});
+  final IconData icon;
+  final String title;
+  final String body;
+  @override
+  Widget build(BuildContext context) => Padding(
+    padding: const EdgeInsets.only(bottom: 14),
+    child: Row(
+      crossAxisAlignment: CrossAxisAlignment.start,
+      children: [
+        CircleAvatar(
+          radius: 20,
+          backgroundColor: const Color(0xFF122B40),
+          foregroundColor: const Color(0xFF7CE2FF),
+          child: Icon(icon, size: 20),
+        ),
+        const SizedBox(width: 12),
+        Expanded(
+          child: Column(
+            crossAxisAlignment: CrossAxisAlignment.start,
+            children: [
+              Text(title, style: const TextStyle(fontWeight: FontWeight.w700)),
+              const SizedBox(height: 3),
+              Text(
+                body,
+                style: const TextStyle(color: Color(0xFF93A4B9), height: 1.3),
+              ),
+            ],
+          ),
+        ),
+      ],
+    ),
+  );
+}
+
+class CaptureScreen extends StatefulWidget {
+  const CaptureScreen({super.key});
+  @override
+  State<CaptureScreen> createState() => _CaptureScreenState();
+}
+
+class _CaptureScreenState extends State<CaptureScreen> {
+  StreamSubscription<dynamic>? motionSubscription;
+  final Set<int> capturedTargets = <int>{};
+  final Map<int, String> capturedPhotoPaths = <int, String>{};
+  final Map<int, Map<String, dynamic>> capturedFrameMetadata =
+      <int, Map<String, dynamic>>{};
+  final Map<int, Future<void>> pendingUploads = <int, Future<void>>{};
+  final Map<int, int> qualityRejectCounts = <int, int>{};
+  bool isCapturing = false;
+  bool movingTooFast = false;
+  bool motionAvailable = true;
+  double? originYaw;
+  double? originPitch;
+  int? activeTarget;
+  double currentYaw = 0;
+  double currentPitch = 0;
+  double currentRoll = 0;
+  DateTime? alignedSince;
+  DateTime? tooFastSince;
+  bool showTooFast = false;
+  String? captureIssue;
+  DateTime? captureRetryAfter;
+  final String localSessionId =
+      'sphere-${DateTime.now().millisecondsSinceEpoch}';
+  late final ServerSessionClient server;
+  List<SphereTarget> targets = buildSphereTargets();
+  Map<String, dynamic> cameraInfo = const <String, dynamic>{};
+
+  @override
+  void initState() {
+    super.initState();
+    const serverUrl = String.fromEnvironment(
+      'CAMERA360_SERVER_URL',
+      defaultValue: 'http://192.168.1.6:8080',
+    );
+    server = ServerSessionClient(baseUrl: Uri.parse(serverUrl));
+    server.createSession(requestedId: localSessionId).catchError((_) {});
+    motionSubscription = const EventChannel('sphere-camera/motion')
+        .receiveBroadcastStream()
+        .listen(_onMotion, onError: (_) => _setMotionUnavailable());
+    WidgetsBinding.instance.addPostFrameCallback((_) => _loadCameraInfo());
+  }
+
+  Future<void> _loadCameraInfo({int attempt = 0}) async {
+    try {
+      final raw = await const MethodChannel(
+        'sphere-camera/methods',
+      ).invokeMethod<Map<Object?, Object?>>('getCameraInfo');
+      final info = _stringKeyedMap(raw);
+      final horizontal = (info['horizontalFovDegrees'] as num?)?.toDouble();
+      final vertical = (info['verticalFovDegrees'] as num?)?.toDouble();
+      if (!mounted || horizontal == null || vertical == null) return;
+      setState(() {
+        cameraInfo = info;
+        if (capturedTargets.isEmpty) {
+          targets = buildSphereTargets(
+            horizontalFovDegrees: horizontal,
+            verticalFovDegrees: vertical,
+          );
+        }
+      });
+    } catch (_) {
+      if (attempt < 6 && mounted) {
+        Future<void>.delayed(
+          const Duration(milliseconds: 300),
+          () => _loadCameraInfo(attempt: attempt + 1),
+        );
+      }
+    }
+  }
+
+  @override
+  void dispose() {
+    motionSubscription?.cancel();
+    super.dispose();
+  }
+
+  void _setMotionUnavailable() {
+    if (mounted) setState(() => motionAvailable = false);
+  }
+
+  void _onMotion(dynamic event) {
+    if (!mounted || event is! Map) return;
+    if (event['available'] == false) {
+      _setMotionUnavailable();
+      return;
+    }
+    final rate = (event['rotationRate'] as num?)?.toDouble() ?? 0;
+    var yaw = (event['yaw'] as num?)?.toDouble();
+    var pitch = (event['pitch'] as num?)?.toDouble();
+    var roll = (event['roll'] as num?)?.toDouble() ?? 0;
+    if (yaw == null || pitch == null) {
+      final w = (event['w'] as num?)?.toDouble() ?? 1;
+      final x = (event['x'] as num?)?.toDouble() ?? 0;
+      final y = (event['y'] as num?)?.toDouble() ?? 0;
+      final z = (event['z'] as num?)?.toDouble() ?? 0;
+      yaw =
+          math.atan2(2 * (w * z + x * y), 1 - 2 * (y * y + z * z)) *
+          180 /
+          math.pi;
+      pitch = math.asin((2 * (w * y - z * x)).clamp(-1, 1)) * 180 / math.pi;
+      roll =
+          math.atan2(2 * (w * x + y * z), 1 - 2 * (x * x + y * y)) *
+          180 /
+          math.pi;
+    }
+    originYaw ??= yaw;
+    originPitch ??= pitch;
+    final relativeYaw = _wrapDegrees(yaw - originYaw!);
+    final relativePitch = (pitch - originPitch!).clamp(-90.0, 90.0);
+    final nearest = _nearestUncapturedTarget(relativeYaw, relativePitch);
+    final now = DateTime.now();
+    final tooFast = rate > .70;
+    final hitAngle =
+        2 + ((rate.clamp(.1745, .6981) - .1745) / (.6981 - .1745)) * 1.5;
+    final distance = nearest == null
+        ? double.infinity
+        : angularDistance(
+            relativeYaw,
+            relativePitch,
+            nearest.yaw,
+            nearest.pitch,
+          );
+
+    if (tooFast) {
+      tooFastSince ??= now;
+      alignedSince = null;
+    } else {
+      tooFastSince = null;
+      if (distance <= hitAngle) {
+        alignedSince ??= now;
+      } else {
+        alignedSince = null;
+      }
+    }
+    final shouldCapture =
+        !tooFast &&
+        nearest != null &&
+        distance <= hitAngle &&
+        alignedSince != null &&
+        (captureRetryAfter == null || now.isAfter(captureRetryAfter!)) &&
+        now.difference(alignedSince!) >= const Duration(milliseconds: 250);
+    setState(() {
+      motionAvailable = true;
+      movingTooFast = tooFast;
+      showTooFast =
+          tooFastSince != null &&
+          now.difference(tooFastSince!) >= const Duration(milliseconds: 250);
+      currentYaw = relativeYaw;
+      currentPitch = relativePitch;
+      currentRoll = roll;
+      activeTarget = nearest?.id;
+      if (distance > 8) captureIssue = null;
+    });
+    if (shouldCapture) {
+      alignedSince = null;
+      capture(nearest.id);
+    }
+  }
+
+  SphereTarget? _nearestUncapturedTarget(double yaw, double pitch) {
+    SphereTarget? result;
+    var best = double.infinity;
+    for (final target in targets) {
+      if (capturedTargets.contains(target.id)) continue;
+      final distance = angularDistance(yaw, pitch, target.yaw, target.pitch);
+      if (distance < best) {
+        best = distance;
+        result = target;
+      }
+    }
+    return result;
+  }
+
+  Future<void> capture(int targetId) async {
+    if (isCapturing ||
+        capturedTargets.length >= targets.length ||
+        capturedTargets.contains(targetId) ||
+        movingTooFast) {
+      return;
+    }
+    setState(() => isCapturing = true);
+    try {
+      final photo = await const MethodChannel('sphere-camera/methods')
+          .invokeMethod<Map<Object?, Object?>>('capturePhoto', {
+            'sessionId': localSessionId,
+            'targetId': targetId,
+            'expectedYaw': targets[targetId].yaw,
+            'expectedPitch': targets[targetId].pitch,
+            'allowImuFallback': (qualityRejectCounts[targetId] ?? 0) >= 2,
+          });
+      final path = photo?['path'] as String?;
+      if (path == null) throw StateError('Camera không trả về đường dẫn ảnh.');
+      final metadata = _stringKeyedMap(photo);
+      metadata.putIfAbsent('schemaVersion', () => '2.0.0');
+      metadata.putIfAbsent(
+        'capturedAtMs',
+        () => DateTime.now().millisecondsSinceEpoch,
+      );
+      metadata.putIfAbsent(
+        'pose',
+        () => <String, dynamic>{
+          'yaw': currentYaw,
+          'pitch': currentPitch,
+          'roll': currentRoll,
+        },
+      );
+      metadata.putIfAbsent('intrinsics', () => cameraInfo);
+      metadata.putIfAbsent(
+        'quality',
+        () => <String, dynamic>{
+          'accepted': true,
+          'validation': 'nativeUnavailable',
+        },
+      );
+      if (!mounted) return;
+      setState(() {
+        capturedTargets.add(targetId);
+        capturedPhotoPaths[targetId] = path;
+        capturedFrameMetadata[targetId] = metadata;
+        isCapturing = false;
+        captureIssue = null;
+        qualityRejectCounts.remove(targetId);
+      });
+      final target = targets[targetId];
+      final upload = _uploadFrame(path, target, metadata);
+      pendingUploads[targetId] = upload;
+      unawaited(upload.whenComplete(() => pendingUploads.remove(targetId)));
+    } catch (error) {
+      if (!mounted) return;
+      final message = error is PlatformException
+          ? (error.message ?? 'Frame chưa đạt chất lượng để ghép.')
+          : 'Chưa lưu được ảnh: $error';
+      setState(() {
+        isCapturing = false;
+        captureIssue = message;
+        captureRetryAfter = DateTime.now().add(const Duration(seconds: 1));
+        if (error is PlatformException && error.code == 'qualityRejected') {
+          qualityRejectCounts[targetId] =
+              (qualityRejectCounts[targetId] ?? 0) + 1;
+        }
+      });
+    }
+  }
+
+  Future<void> _uploadFrame(
+    String path,
+    SphereTarget target,
+    Map<String, dynamic> metadata,
+  ) async {
+    try {
+      if (server.remoteSessionId == null) {
+        await server.createSession(requestedId: localSessionId);
+      }
+      await server.uploadFrame(
+        path: path,
+        targetIndex: target.id,
+        expectedYaw: target.yaw,
+        expectedPitch: target.pitch,
+        captureMetadata: metadata,
+      );
+    } catch (_) {
+      // Local capture remains usable when the optional stitching server is away.
+    }
+  }
+
+  Future<void> finishCapture() async {
+    if (capturedTargets.isEmpty || isCapturing) return;
+    try {
+      await Future.wait(pendingUploads.values.toList(), eagerError: false);
+      await server.complete(
+        frames: capturedTargets
+            .map(
+              (id) => <String, dynamic>{
+                'id': 'frame-$id',
+                'targetId': 'sphere-target-$id',
+                'capture': capturedFrameMetadata[id],
+              },
+            )
+            .toList(),
+      );
+      await server.startStitch();
+    } catch (error) {
+      if (mounted) {
+        ScaffoldMessenger.of(context).showSnackBar(
+          SnackBar(
+            content: Text('Đã lưu ảnh cục bộ; chưa gửi được bước ghép: $error'),
+          ),
+        );
+      }
+    }
+    if (mounted) {
+      await Navigator.pushReplacement(
+        context,
+        MaterialPageRoute(builder: (_) => const ProcessingScreen()),
+      );
+    }
+  }
+
+  Future<void> _cancelCapture() async {
+    if (capturedTargets.isEmpty) {
+      if (mounted) Navigator.pop(context);
+      return;
+    }
+    final discard = await showDialog<bool>(
+      context: context,
+      builder: (context) => AlertDialog(
+        title: const Text('Hủy ảnh Photo Sphere?'),
+        content: const Text(
+          'Các ảnh đã chụp trong phiên này sẽ không được ghép.',
+        ),
+        actions: [
+          TextButton(
+            onPressed: () => Navigator.pop(context, false),
+            child: const Text('Tiếp tục chụp'),
+          ),
+          TextButton(
+            onPressed: () => Navigator.pop(context, true),
+            child: const Text('Hủy ảnh'),
+          ),
+        ],
+      ),
+    );
+    if (discard == true && mounted) Navigator.pop(context);
+  }
+
+  void _undo() {
+    if (capturedTargets.isEmpty || isCapturing) return;
+    final last = capturedTargets.last;
+    final path = capturedPhotoPaths[last];
+    setState(() {
+      capturedTargets.remove(last);
+      capturedPhotoPaths.remove(last);
+      capturedFrameMetadata.remove(last);
+    });
+    if (path != null) unawaited(_deleteLocalFrame(path));
+    unawaited(
+      const MethodChannel(
+        'sphere-camera/methods',
+      ).invokeMethod<void>('undoLastPatch').catchError((_) {}),
+    );
+    unawaited(server.deleteFrame(targetIndex: last).catchError((_) {}));
+  }
+
+  Future<void> _deleteLocalFrame(String path) async {
+    final image = File(path);
+    final metadata = File('${path.substring(0, path.lastIndexOf('.'))}.json');
+    if (await image.exists()) await image.delete();
+    if (await metadata.exists()) await metadata.delete();
+  }
+
+  @override
+  Widget build(BuildContext context) => Scaffold(
+    backgroundColor: Colors.black,
+    resizeToAvoidBottomInset: false,
+    body: Stack(
+      fit: StackFit.expand,
+      children: [
+        const ColoredBox(color: Colors.black),
+        const _LiveCameraSurface(),
+        CustomPaint(
+          painter: _TargetPainter(
+            targets: targets,
+            currentYaw: currentYaw,
+            currentPitch: currentPitch,
+            captured: capturedTargets,
+            active: activeTarget,
+            photoInFlight: isCapturing,
+            horizontalFov:
+                (cameraInfo['horizontalFovDegrees'] as num?)?.toDouble() ?? 55,
+            verticalFov:
+                (cameraInfo['verticalFovDegrees'] as num?)?.toDouble() ?? 72,
+          ),
+        ),
+        SafeArea(
+          child: Column(
+            children: [
+              const SizedBox(height: 28),
+              if (!motionAvailable)
+                const _CaptureMessage(
+                  'Thiết bị cần cảm biến con quay hồi chuyển',
+                )
+              else if (showTooFast)
+                const _CaptureMessage('Quá nhanh — hãy giữ yên')
+              else if (isCapturing)
+                const _CaptureMessage('Đang chụp…')
+              else if (captureIssue != null)
+                _CaptureMessage(captureIssue!),
+              const Spacer(),
+              if (capturedTargets.isEmpty)
+                const Padding(
+                  padding: EdgeInsets.only(bottom: 22),
+                  child: Text(
+                    'Căn vòng tròn vào chấm màu cam',
+                    textAlign: TextAlign.center,
+                    style: TextStyle(
+                      fontSize: 17,
+                      fontWeight: FontWeight.w600,
+                      shadows: [Shadow(blurRadius: 8, color: Colors.black)],
+                    ),
+                  ),
+                ),
+              SizedBox(
+                height: 88,
+                child: Stack(
+                  alignment: Alignment.center,
+                  children: [
+                    if (capturedTargets.isNotEmpty)
+                      Align(
+                        alignment: Alignment.centerLeft,
+                        child: Padding(
+                          padding: const EdgeInsets.only(left: 12),
+                          child: IconButton(
+                            onPressed: isCapturing ? null : _undo,
+                            iconSize: 36,
+                            icon: const Icon(Icons.undo_rounded),
+                            tooltip: 'Hoàn tác ảnh cuối',
+                          ),
+                        ),
+                      ),
+                    if (capturedTargets.isNotEmpty)
+                      _DoneProgressButton(
+                        progress: capturedTargets.length / targets.length,
+                        enabled: !isCapturing,
+                        onPressed: finishCapture,
+                      ),
+                    Align(
+                      alignment: Alignment.centerRight,
+                      child: Padding(
+                        padding: const EdgeInsets.only(right: 12),
+                        child: IconButton(
+                          onPressed: _cancelCapture,
+                          iconSize: 38,
+                          icon: const Icon(Icons.close_rounded),
+                          tooltip: 'Hủy',
+                        ),
+                      ),
+                    ),
+                  ],
+                ),
+              ),
+              const SizedBox(height: 6),
+            ],
+          ),
+        ),
+      ],
+    ),
+  );
+}
+
+final class SphereTarget {
+  const SphereTarget(this.id, this.yaw, this.pitch);
+  final int id;
+  final double yaw;
+  final double pitch;
+}
+
+List<SphereTarget> buildSphereTargets({
+  double horizontalFovDegrees = 55,
+  double verticalFovDegrees = 72,
+}) {
+  final targets = <SphereTarget>[];
+  void addRing(double pitch, int count, {double offset = 0}) {
+    for (var i = 0; i < count; i++) {
+      targets.add(
+        SphereTarget(targets.length, offset + i * 360 / count, pitch),
+      );
+    }
+  }
+
+  // Keep roughly 42% horizontal and 50% vertical overlap. Target density is
+  // derived from the active lens FOV and decreases with latitude, matching the
+  // geometry expected by a spherical stitcher instead of assuming one device.
+  final yawStep = (horizontalFovDegrees * .58).clamp(24.0, 40.0);
+  final pitchStep = (verticalFovDegrees * .50).clamp(28.0, 42.0);
+  final horizonCount = (360 / yawStep).ceil().clamp(9, 16);
+  addRing(0, horizonCount);
+  for (var pitch = pitchStep; pitch < 82; pitch += pitchStep) {
+    final ringCount = (horizonCount * math.cos(pitch * math.pi / 180))
+        .round()
+        .clamp(3, horizonCount);
+    final offset = 180 / ringCount;
+    addRing(pitch, ringCount, offset: offset);
+    addRing(-pitch, ringCount, offset: offset);
+  }
+  targets.add(SphereTarget(targets.length, 0, 90));
+  targets.add(SphereTarget(targets.length, 0, -90));
+  return targets;
+}
+
+Map<String, dynamic> _stringKeyedMap(Map<Object?, Object?>? source) {
+  if (source == null) return <String, dynamic>{};
+  dynamic convert(dynamic value) {
+    if (value is Map) {
+      return <String, dynamic>{
+        for (final entry in value.entries)
+          if (entry.key != null) entry.key.toString(): convert(entry.value),
+      };
+    }
+    if (value is List) return value.map(convert).toList();
+    return value;
+  }
+
+  return convert(source) as Map<String, dynamic>;
+}
+
+double _wrapDegrees(double value) {
+  var wrapped = value % 360;
+  if (wrapped > 180) wrapped -= 360;
+  if (wrapped < -180) wrapped += 360;
+  return wrapped;
+}
+
+double angularDistance(double yawA, double pitchA, double yawB, double pitchB) {
+  final latA = pitchA * math.pi / 180;
+  final latB = pitchB * math.pi / 180;
+  final deltaYaw = _wrapDegrees(yawA - yawB) * math.pi / 180;
+  final cosine =
+      (math.sin(latA) * math.sin(latB) +
+              math.cos(latA) * math.cos(latB) * math.cos(deltaYaw))
+          .clamp(-1.0, 1.0);
+  return math.acos(cosine) * 180 / math.pi;
+}
+
+class _LiveCameraSurface extends StatelessWidget {
+  const _LiveCameraSurface();
+  @override
+  Widget build(BuildContext context) {
+    if (Platform.isIOS) {
+      return const UiKitView(viewType: 'sphere-camera-preview');
+    }
+    if (Platform.isAndroid) {
+      return const AndroidView(viewType: 'sphere-camera-preview');
+    }
+    return const ColoredBox(color: Colors.black);
+  }
+}
+
+class _CaptureMessage extends StatelessWidget {
+  const _CaptureMessage(this.text);
+  final String text;
+  @override
+  Widget build(BuildContext context) => DecoratedBox(
+    decoration: BoxDecoration(
+      color: Colors.black54,
+      borderRadius: BorderRadius.circular(4),
+    ),
+    child: Padding(
+      padding: const EdgeInsets.symmetric(horizontal: 14, vertical: 8),
+      child: Text(text, style: const TextStyle(fontWeight: FontWeight.w600)),
+    ),
+  );
+}
+
+class _DoneProgressButton extends StatelessWidget {
+  const _DoneProgressButton({
+    required this.progress,
+    required this.enabled,
+    required this.onPressed,
+  });
+  final double progress;
+  final bool enabled;
+  final VoidCallback onPressed;
+  @override
+  Widget build(BuildContext context) => SizedBox.square(
+    dimension: 76,
+    child: Stack(
+      fit: StackFit.expand,
+      children: [
+        CircularProgressIndicator(
+          value: progress,
+          strokeWidth: 7,
+          backgroundColor: Colors.white30,
+          color: progress >= 1
+              ? const Color(0xFF34A853)
+              : const Color(0xFFFFA000),
+        ),
+        Padding(
+          padding: const EdgeInsets.all(8),
+          child: IconButton.filled(
+            onPressed: enabled ? onPressed : null,
+            style: IconButton.styleFrom(
+              backgroundColor: const Color(0xFFFFA000),
+              disabledBackgroundColor: const Color(0xAAFFA000),
+            ),
+            iconSize: 36,
+            icon: const Icon(Icons.check_rounded, color: Colors.white),
+          ),
+        ),
+      ],
+    ),
+  );
+}
+
+class _CameraBackdrop extends StatelessWidget {
+  const _CameraBackdrop();
+  @override
+  Widget build(BuildContext context) => const DecoratedBox(
+    decoration: BoxDecoration(
+      gradient: RadialGradient(
+        center: Alignment.center,
+        radius: 1.1,
+        colors: [Color(0xFF466D77), Color(0xFF152A33), Colors.black],
+        stops: [0, .52, 1],
+      ),
+    ),
+  );
+}
+
+class _TargetPainter extends CustomPainter {
+  const _TargetPainter({
+    required this.targets,
+    required this.currentYaw,
+    required this.currentPitch,
+    required this.captured,
+    required this.active,
+    required this.photoInFlight,
+    required this.horizontalFov,
+    required this.verticalFov,
+  });
+  final List<SphereTarget> targets;
+  final double currentYaw;
+  final double currentPitch;
+  final Set<int> captured;
+  final int? active;
+  final bool photoInFlight;
+  final double horizontalFov;
+  final double verticalFov;
+  @override
+  void paint(Canvas canvas, Size size) {
+    final pnt = Paint();
+    for (final target in targets) {
+      if (captured.contains(target.id)) continue;
+      final relativeYaw = _wrapDegrees(target.yaw - currentYaw);
+      final relativePitch = target.pitch - currentPitch;
+      if (relativeYaw.abs() > horizontalFov * .62 ||
+          relativePitch.abs() > verticalFov * .62) {
+        continue;
+      }
+      final angularDistance = math.sqrt(
+        relativeYaw * relativeYaw + relativePitch * relativePitch,
+      );
+      final proximity = angularDistance <= 10
+          ? 1.0
+          : angularDistance >= 20
+          ? .08
+          : 1 - (angularDistance - 10) / 10;
+      final xProjection =
+          math.tan(relativeYaw * math.pi / 180) /
+          (2 * math.tan(horizontalFov * math.pi / 360));
+      final yProjection =
+          math.tan(relativePitch * math.pi / 180) /
+          (2 * math.tan(verticalFov * math.pi / 360));
+      final p = Offset(
+        size.width * (.5 + xProjection),
+        size.height * (.48 - yProjection),
+      );
+      final isActive = target.id == active;
+      pnt.color =
+          (isActive
+                  ? (photoInFlight ? Colors.white : const Color(0xFFFFA000))
+                  : const Color(0xFFFFA000))
+              .withValues(alpha: isActive ? proximity : proximity * .65);
+      canvas.drawCircle(p, isActive ? 12 : 7, pnt);
+      if (isActive) {
+        pnt
+          ..style = PaintingStyle.stroke
+          ..strokeWidth = 3
+          ..color = photoInFlight ? Colors.white70 : const Color(0xCCFFA000);
+        canvas.drawCircle(p, 20, pnt);
+        pnt.style = PaintingStyle.fill;
+      }
+    }
+    pnt
+      ..style = PaintingStyle.stroke
+      ..strokeWidth = 3
+      ..color = Colors.white;
+    final center = Offset(size.width / 2, size.height * .48);
+    canvas.drawCircle(center, 22, pnt);
+    pnt.style = PaintingStyle.fill;
+    canvas.drawCircle(center, 3, pnt);
+  }
+
+  @override
+  bool shouldRepaint(_TargetPainter old) =>
+      old.targets.length != targets.length ||
+      old.currentYaw != currentYaw ||
+      old.currentPitch != currentPitch ||
+      old.captured.length != captured.length ||
+      !old.captured.containsAll(captured) ||
+      old.active != active ||
+      old.photoInFlight != photoInFlight ||
+      old.horizontalFov != horizontalFov ||
+      old.verticalFov != verticalFov;
+}
+
+class ProcessingScreen extends StatefulWidget {
+  const ProcessingScreen({super.key});
+  @override
+  State<ProcessingScreen> createState() => _ProcessingScreenState();
+}
+
+class _ProcessingScreenState extends State<ProcessingScreen> {
+  double progress = 0;
+  Timer? timer;
+  @override
+  void initState() {
+    super.initState();
+    timer = Timer.periodic(const Duration(milliseconds: 100), (_) {
+      if (!mounted) return;
+      setState(() => progress = (progress + .025).clamp(0, 1));
+      if (progress >= 1) timer?.cancel();
+    });
+  }
+
+  @override
+  void dispose() {
+    timer?.cancel();
+    super.dispose();
+  }
+
+  @override
+  Widget build(BuildContext context) => Scaffold(
+    body: Center(
+      child: Padding(
+        padding: const EdgeInsets.all(28),
+        child: Column(
+          mainAxisSize: MainAxisSize.min,
+          children: [
+            const Icon(
+              Icons.auto_awesome_rounded,
+              size: 54,
+              color: Color(0xFF7CE2FF),
+            ),
+            const SizedBox(height: 24),
+            const Text(
+              'Đang tạo Sphere',
+              style: TextStyle(fontSize: 25, fontWeight: FontWeight.w800),
+            ),
+            const SizedBox(height: 8),
+            const Text(
+              'Đang căn chỉnh và ghép các khung hình…',
+              textAlign: TextAlign.center,
+              style: TextStyle(color: Color(0xFF9AAEC3)),
+            ),
+            const SizedBox(height: 28),
+            LinearProgressIndicator(value: progress, minHeight: 8),
+            const SizedBox(height: 12),
+            Text(
+              '${(progress * 100).round()}%',
+              style: const TextStyle(
+                color: Color(0xFF7CE2FF),
+                fontWeight: FontWeight.w700,
+              ),
+            ),
+            if (progress >= 1) ...[
+              const SizedBox(height: 26),
+              FilledButton.icon(
+                onPressed: () => Navigator.pushReplacement(
+                  context,
+                  MaterialPageRoute(builder: (_) => const ViewerScreen()),
+                ),
+                icon: const Icon(Icons.threesixty_rounded),
+                label: const Text('Mở Sphere'),
+              ),
+            ],
+          ],
+        ),
+      ),
+    ),
+  );
+}
+
+class ViewerScreen extends StatelessWidget {
+  const ViewerScreen({super.key});
+  @override
+  Widget build(BuildContext context) => Scaffold(
+    backgroundColor: Colors.black,
+    appBar: AppBar(
+      backgroundColor: Colors.black,
+      title: const Text('Sphere của bạn'),
+      actions: [
+        IconButton(onPressed: () {}, icon: const Icon(Icons.ios_share_rounded)),
+      ],
+    ),
+    body: Stack(
+      fit: StackFit.expand,
+      children: [
+        const _CameraBackdrop(),
+        Center(
+          child: Column(
+            mainAxisSize: MainAxisSize.min,
+            children: [
+              Icon(
+                Icons.threesixty_rounded,
+                size: 68,
+                color: Color(0xFF7CE2FF),
+              ),
+              SizedBox(height: 16),
+              Text(
+                'Kéo để xem xung quanh',
+                style: TextStyle(fontSize: 18, fontWeight: FontWeight.w700),
+              ),
+              SizedBox(height: 6),
+              Text(
+                'Bản demo viewer — ảnh ghép sẽ được kết nối ở bước tiếp theo',
+                style: TextStyle(color: Colors.white70),
+                textAlign: TextAlign.center,
+              ),
+            ],
+          ),
+        ),
+      ],
+    ),
+  );
+}
