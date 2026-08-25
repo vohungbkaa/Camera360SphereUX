@@ -496,6 +496,7 @@ class _CaptureScreenState extends State<CaptureScreen> {
 
   Future<void> finishCapture() async {
     if (capturedTargets.isEmpty || isCapturing) return;
+    final isFullSphere = capturedTargets.length == targets.length;
     try {
       await Future.wait(pendingUploads.values.toList(), eagerError: false);
       await server.complete(
@@ -504,10 +505,16 @@ class _CaptureScreenState extends State<CaptureScreen> {
               (id) => <String, dynamic>{
                 'id': 'frame-$id',
                 'targetId': 'sphere-target-$id',
+                'expectedPose': <String, double>{
+                  'yaw': targets[id].yaw,
+                  'pitch': targets[id].pitch,
+                },
                 'capture': capturedFrameMetadata[id],
               },
             )
             .toList(),
+        productType: isFullSphere ? '360' : 'wide-panorama',
+        isClosedLoop: isFullSphere,
       );
       await server.startStitch();
     } catch (error) {
@@ -522,7 +529,9 @@ class _CaptureScreenState extends State<CaptureScreen> {
     if (mounted) {
       await Navigator.pushReplacement(
         context,
-        MaterialPageRoute(builder: (_) => const ProcessingScreen()),
+        MaterialPageRoute(
+          builder: (_) => ProcessingScreen(isFullSphere: isFullSphere),
+        ),
       );
     }
   }
@@ -535,7 +544,7 @@ class _CaptureScreenState extends State<CaptureScreen> {
     final discard = await showDialog<bool>(
       context: context,
       builder: (context) => AlertDialog(
-        title: const Text('Hủy ảnh Photo Sphere?'),
+        title: const Text('Hủy phiên chụp?'),
         content: const Text(
           'Các ảnh đã chụp trong phiên này sẽ không được ghép.',
         ),
@@ -651,6 +660,7 @@ class _CaptureScreenState extends State<CaptureScreen> {
                     if (capturedTargets.isNotEmpty)
                       _DoneProgressButton(
                         progress: capturedTargets.length / targets.length,
+                        isFullSphere: capturedTargets.length == targets.length,
                         enabled: !isCapturing,
                         onPressed: finishCapture,
                       ),
@@ -752,6 +762,69 @@ double angularDistance(double yawA, double pitchA, double yawB, double pitchB) {
   return math.acos(cosine) * 180 / math.pi;
 }
 
+final class TargetGuideDirection {
+  const TargetGuideDirection({
+    required this.direction,
+    required this.isOnScreen,
+  });
+
+  /// Screen-space direction from the reticle: +x is right, +y is down.
+  final Offset direction;
+  final bool isOnScreen;
+}
+
+TargetGuideDirection targetGuideDirection({
+  required double currentYaw,
+  required double currentPitch,
+  required double targetYaw,
+  required double targetPitch,
+  required double horizontalFov,
+  required double verticalFov,
+}) {
+  final currentPitchRadians = currentPitch * math.pi / 180;
+  final targetPitchRadians = targetPitch * math.pi / 180;
+  final relativeYaw = _wrapDegrees(targetYaw - currentYaw);
+  final relativeYawRadians = relativeYaw * math.pi / 180;
+
+  // Target ray expressed in the current camera's right/up/forward basis.
+  final right = math.cos(targetPitchRadians) * math.sin(relativeYawRadians);
+  final up =
+      math.sin(targetPitchRadians) * math.cos(currentPitchRadians) -
+      math.cos(targetPitchRadians) *
+          math.cos(relativeYawRadians) *
+          math.sin(currentPitchRadians);
+  final forward =
+      math.sin(targetPitchRadians) * math.sin(currentPitchRadians) +
+      math.cos(targetPitchRadians) *
+          math.cos(relativeYawRadians) *
+          math.cos(currentPitchRadians);
+
+  final halfHorizontalTangent = math.tan(horizontalFov * math.pi / 360);
+  final halfVerticalTangent = math.tan(verticalFov * math.pi / 360);
+  if (forward > 0.001) {
+    final projected = Offset(
+      right / forward / halfHorizontalTangent,
+      -up / forward / halfVerticalTangent,
+    );
+    return TargetGuideDirection(
+      direction: projected,
+      isOnScreen: projected.dx.abs() <= .9 && projected.dy.abs() <= .78,
+    );
+  }
+
+  // Projection is undefined behind the camera. Keep the shortest yaw turn;
+  // an exact 180° target consistently points right instead of flickering.
+  var horizontal = right;
+  if (horizontal.abs() < .001) horizontal = relativeYaw >= 0 ? 1 : -1;
+  final behindDirection = Offset(horizontal, -up);
+  return TargetGuideDirection(
+    direction: behindDirection.distanceSquared > .000001
+        ? behindDirection
+        : const Offset(1, 0),
+    isOnScreen: false,
+  );
+}
+
 class _LiveCameraSurface extends StatelessWidget {
   const _LiveCameraSurface();
   @override
@@ -785,10 +858,12 @@ class _CaptureMessage extends StatelessWidget {
 class _DoneProgressButton extends StatelessWidget {
   const _DoneProgressButton({
     required this.progress,
+    required this.isFullSphere,
     required this.enabled,
     required this.onPressed,
   });
   final double progress;
+  final bool isFullSphere;
   final bool enabled;
   final VoidCallback onPressed;
   @override
@@ -814,6 +889,9 @@ class _DoneProgressButton extends StatelessWidget {
               disabledBackgroundColor: const Color(0xAAFFA000),
             ),
             iconSize: 36,
+            tooltip: isFullSphere
+                ? 'Hoàn thành ảnh 360°'
+                : 'Hoàn thành panorama góc rộng',
             icon: const Icon(Icons.check_rounded, color: Colors.white),
           ),
         ),
@@ -859,38 +937,39 @@ class _TargetPainter extends CustomPainter {
   @override
   void paint(Canvas canvas, Size size) {
     final pnt = Paint();
+    final center = Offset(size.width / 2, size.height * .48);
     for (final target in targets) {
       if (captured.contains(target.id)) continue;
-      final relativeYaw = _wrapDegrees(target.yaw - currentYaw);
-      final relativePitch = target.pitch - currentPitch;
-      if (relativeYaw.abs() > horizontalFov * .62 ||
-          relativePitch.abs() > verticalFov * .62) {
-        continue;
-      }
-      final angularDistance = math.sqrt(
-        relativeYaw * relativeYaw + relativePitch * relativePitch,
+      final guide = targetGuideDirection(
+        currentYaw: currentYaw,
+        currentPitch: currentPitch,
+        targetYaw: target.yaw,
+        targetPitch: target.pitch,
+        horizontalFov: horizontalFov,
+        verticalFov: verticalFov,
       );
-      final proximity = angularDistance <= 10
+      if (!guide.isOnScreen) continue;
+      final distance = angularDistance(
+        currentYaw,
+        currentPitch,
+        target.yaw,
+        target.pitch,
+      );
+      final proximity = distance <= 10
           ? 1.0
-          : angularDistance >= 20
+          : distance >= 20
           ? .08
-          : 1 - (angularDistance - 10) / 10;
-      final xProjection =
-          math.tan(relativeYaw * math.pi / 180) /
-          (2 * math.tan(horizontalFov * math.pi / 360));
-      final yProjection =
-          math.tan(relativePitch * math.pi / 180) /
-          (2 * math.tan(verticalFov * math.pi / 360));
+          : 1 - (distance - 10) / 10;
       final p = Offset(
-        size.width * (.5 + xProjection),
-        size.height * (.48 - yProjection),
+        center.dx + guide.direction.dx * size.width / 2,
+        center.dy + guide.direction.dy * size.height / 2,
       );
       final isActive = target.id == active;
       pnt.color =
           (isActive
                   ? (photoInFlight ? Colors.white : const Color(0xFFFFA000))
                   : const Color(0xFFFFA000))
-              .withValues(alpha: isActive ? proximity : proximity * .65);
+              .withValues(alpha: isActive ? 1 : proximity * .65);
       canvas.drawCircle(p, isActive ? 12 : 7, pnt);
       if (isActive) {
         pnt
@@ -901,14 +980,91 @@ class _TargetPainter extends CustomPainter {
         pnt.style = PaintingStyle.fill;
       }
     }
+    final activeTarget = active == null
+        ? null
+        : targets.cast<SphereTarget?>().firstWhere(
+            (target) => target?.id == active,
+            orElse: () => null,
+          );
+    if (activeTarget != null && !captured.contains(activeTarget.id)) {
+      final guide = targetGuideDirection(
+        currentYaw: currentYaw,
+        currentPitch: currentPitch,
+        targetYaw: activeTarget.yaw,
+        targetPitch: activeTarget.pitch,
+        horizontalFov: horizontalFov,
+        verticalFov: verticalFov,
+      );
+      _paintNavigationArrow(canvas, size, guide);
+    }
     pnt
       ..style = PaintingStyle.stroke
       ..strokeWidth = 3
       ..color = Colors.white;
-    final center = Offset(size.width / 2, size.height * .48);
     canvas.drawCircle(center, 22, pnt);
     pnt.style = PaintingStyle.fill;
     canvas.drawCircle(center, 3, pnt);
+  }
+
+  void _paintNavigationArrow(
+    Canvas canvas,
+    Size size,
+    TargetGuideDirection guide,
+  ) {
+    final center = Offset(size.width / 2, size.height * .48);
+    final pixelDirection = Offset(
+      guide.direction.dx * size.width / 2,
+      guide.direction.dy * size.height / 2,
+    );
+    final direction = pixelDirection.distanceSquared > .000001
+        ? pixelDirection / pixelDirection.distance
+        : const Offset(1, 0);
+    final safeRect = Rect.fromLTRB(42, 82, size.width - 42, size.height - 142);
+    final horizontalDistance = direction.dx > 0
+        ? (safeRect.right - center.dx) / direction.dx
+        : direction.dx < 0
+        ? (safeRect.left - center.dx) / direction.dx
+        : double.infinity;
+    final verticalDistance = direction.dy > 0
+        ? (safeRect.bottom - center.dy) / direction.dy
+        : direction.dy < 0
+        ? (safeRect.top - center.dy) / direction.dy
+        : double.infinity;
+    final edgeDistance = math.min(horizontalDistance, verticalDistance);
+    final targetPosition = guide.isOnScreen
+        ? center + pixelDirection
+        : center + direction * edgeDistance;
+    final guideLength = (targetPosition - center).distance;
+    if (guideLength <= 38) return;
+    final start = center + direction * 29;
+    final tip = targetPosition - direction * (guide.isOnScreen ? 22 : 7);
+    if ((tip - start).distance <= 10) return;
+    final angle = math.atan2(direction.dy, direction.dx);
+    final arrowPaint = Paint()
+      ..color = photoInFlight ? Colors.white : const Color(0xFFFFA000)
+      ..style = PaintingStyle.stroke
+      ..strokeWidth = 5
+      ..strokeCap = StrokeCap.round
+      ..strokeJoin = StrokeJoin.round;
+    final shadowPaint = Paint()
+      ..color = const Color(0xB3000000)
+      ..style = PaintingStyle.stroke
+      ..strokeWidth = 10
+      ..strokeCap = StrokeCap.round
+      ..strokeJoin = StrokeJoin.round;
+    canvas.drawLine(start, tip, shadowPaint);
+    canvas.drawLine(start, tip, arrowPaint);
+
+    canvas.save();
+    canvas.translate(tip.dx, tip.dy);
+    canvas.rotate(angle);
+    final head = Path()
+      ..moveTo(-12, -10)
+      ..lineTo(0, 0)
+      ..lineTo(-12, 10);
+    canvas.drawPath(head, shadowPaint);
+    canvas.drawPath(head, arrowPaint);
+    canvas.restore();
   }
 
   @override
@@ -925,7 +1081,9 @@ class _TargetPainter extends CustomPainter {
 }
 
 class ProcessingScreen extends StatefulWidget {
-  const ProcessingScreen({super.key});
+  const ProcessingScreen({required this.isFullSphere, super.key});
+
+  final bool isFullSphere;
   @override
   State<ProcessingScreen> createState() => _ProcessingScreenState();
 }
@@ -963,9 +1121,11 @@ class _ProcessingScreenState extends State<ProcessingScreen> {
               color: Color(0xFF7CE2FF),
             ),
             const SizedBox(height: 24),
-            const Text(
-              'Đang tạo Sphere',
-              style: TextStyle(fontSize: 25, fontWeight: FontWeight.w800),
+            Text(
+              widget.isFullSphere
+                  ? 'Đang tạo Sphere'
+                  : 'Đang ghép panorama góc rộng',
+              style: const TextStyle(fontSize: 25, fontWeight: FontWeight.w800),
             ),
             const SizedBox(height: 8),
             const Text(
@@ -988,10 +1148,17 @@ class _ProcessingScreenState extends State<ProcessingScreen> {
               FilledButton.icon(
                 onPressed: () => Navigator.pushReplacement(
                   context,
-                  MaterialPageRoute(builder: (_) => const ViewerScreen()),
+                  MaterialPageRoute(
+                    builder: (_) =>
+                        ViewerScreen(isFullSphere: widget.isFullSphere),
+                  ),
                 ),
-                icon: const Icon(Icons.threesixty_rounded),
-                label: const Text('Mở Sphere'),
+                icon: Icon(
+                  widget.isFullSphere
+                      ? Icons.threesixty_rounded
+                      : Icons.panorama_horizontal_rounded,
+                ),
+                label: Text(widget.isFullSphere ? 'Mở Sphere' : 'Mở panorama'),
               ),
             ],
           ],
@@ -1002,13 +1169,15 @@ class _ProcessingScreenState extends State<ProcessingScreen> {
 }
 
 class ViewerScreen extends StatelessWidget {
-  const ViewerScreen({super.key});
+  const ViewerScreen({required this.isFullSphere, super.key});
+
+  final bool isFullSphere;
   @override
   Widget build(BuildContext context) => Scaffold(
     backgroundColor: Colors.black,
     appBar: AppBar(
       backgroundColor: Colors.black,
-      title: const Text('Sphere của bạn'),
+      title: Text(isFullSphere ? 'Sphere của bạn' : 'Panorama của bạn'),
       actions: [
         IconButton(onPressed: () {}, icon: const Icon(Icons.ios_share_rounded)),
       ],
@@ -1022,13 +1191,17 @@ class ViewerScreen extends StatelessWidget {
             mainAxisSize: MainAxisSize.min,
             children: [
               Icon(
-                Icons.threesixty_rounded,
+                isFullSphere
+                    ? Icons.threesixty_rounded
+                    : Icons.panorama_horizontal_rounded,
                 size: 68,
                 color: Color(0xFF7CE2FF),
               ),
               SizedBox(height: 16),
               Text(
-                'Kéo để xem xung quanh',
+                isFullSphere
+                    ? 'Kéo để xem xung quanh'
+                    : 'Kéo để xem toàn bộ góc rộng',
                 style: TextStyle(fontSize: 18, fontWeight: FontWeight.w700),
               ),
               SizedBox(height: 6),

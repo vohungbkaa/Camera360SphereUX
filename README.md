@@ -79,6 +79,55 @@ flutter analyze
 flutter test
 ```
 
+## So sánh Hugin và OpenStitching
+
+Cài dependency một lần bằng lệnh backend ở trên. Chạy cả hai engine trên cùng
+một session, cùng ảnh đã chuẩn hóa EXIF và cùng kích thước input:
+
+```bash
+cd /Users/vvhung/Documents/Projects/Camera360SphereUX
+scripts/stitch-session.sh compare sphere-1787616024522
+```
+
+Kết quả nằm trong
+`backend/data/sessions/<session-id>/benchmark/<timestamp>/`, gồm:
+
+- `hugin/panorama.jpg`, PTO và log Hugin;
+- `openstitching/panorama.jpg`, settings và match graph;
+- `report.html` để xem hai ảnh cạnh nhau;
+- `report.json` chứa thời gian, số frame được dùng, kích thước, coverage và chỉ
+  số sharpness tham khảo.
+
+Chạy riêng từng engine:
+
+```bash
+scripts/stitch-session.sh hugin sphere-1787616024522
+scripts/stitch-session.sh openstitching sphere-1787616024522
+```
+
+Mặc định ảnh benchmark có cạnh tối đa 1600 px và Hugin xuất 4096×2048. Chạy
+nhanh để kiểm tra pipeline:
+
+```bash
+scripts/stitch-session.sh compare sphere-1787616024522 \
+  --input-max-edge 768 --canvas-width 2048 --hugin-match prealigned
+```
+
+Chạy đánh giá chất lượng cao (rất tốn RAM, CPU và thời gian với 42 frame):
+
+```bash
+scripts/stitch-session.sh compare sphere-1787616024522 \
+  --input-max-edge 0 --canvas-width 8192 --hugin-match prealigned
+```
+
+`prealigned` là mặc định khuyến nghị: yaw/pitch target trong sidecar được seed
+vào PTO trước khi CPFind chạy. `allpairs` bỏ lợi thế pose prior khi matching và
+có thể tạo match sai trong phòng nhiều cạnh/lưới lặp; chỉ dùng nó để chẩn đoán.
+
+Không chọn engine chỉ bằng sharpness/coverage. Cần mở `report.html` và zoom vào
+cạnh cửa, cửa sổ, song sắt, đường chân tường, vùng overlap, thiên đỉnh và nadir
+để đánh giá ghosting, đường gãy, seam và exposure.
+
 Phân tích APK: [docs/reverse-forensic.md](docs/reverse-forensic.md)  
 Nguồn Google/paper/video: [docs/google-sources.md](docs/google-sources.md)  
 Trạng thái và giới hạn: [docs/reverse-notes.md](docs/reverse-notes.md)

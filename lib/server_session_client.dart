@@ -69,7 +69,11 @@ final class ServerSessionClient {
     _check(response);
   }
 
-  Future<void> complete({required List<Map<String, dynamic>> frames}) async {
+  Future<void> complete({
+    required List<Map<String, dynamic>> frames,
+    required String productType,
+    required bool isClosedLoop,
+  }) async {
     final sessionId = remoteSessionId;
     if (sessionId == null) return;
     final response = await _client.post(
@@ -77,8 +81,8 @@ final class ServerSessionClient {
       headers: {'Content-Type': 'application/json'},
       body: jsonEncode({
         'schemaVersion': '2.0.0',
-        'productType': '360',
-        'isClosedLoop': true,
+        'productType': productType,
+        'isClosedLoop': isClosedLoop,
         'frames': frames,
       }),
     );

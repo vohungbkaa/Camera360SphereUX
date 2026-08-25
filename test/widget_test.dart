@@ -42,4 +42,51 @@ void main() {
     expect(angularDistance(359, 0, 1, 0), closeTo(2, 0.0001));
     expect(angularDistance(0, 0, 0, 90), closeTo(90, 0.0001));
   });
+
+  test(
+    'off-screen target guide points along the shortest useful direction',
+    () {
+      final right = targetGuideDirection(
+        currentYaw: 0,
+        currentPitch: 0,
+        targetYaw: 90,
+        targetPitch: 0,
+        horizontalFov: 55,
+        verticalFov: 72,
+      );
+      final left = targetGuideDirection(
+        currentYaw: 0,
+        currentPitch: 0,
+        targetYaw: -90,
+        targetPitch: 0,
+        horizontalFov: 55,
+        verticalFov: 72,
+      );
+      final up = targetGuideDirection(
+        currentYaw: 0,
+        currentPitch: 0,
+        targetYaw: 0,
+        targetPitch: 70,
+        horizontalFov: 55,
+        verticalFov: 72,
+      );
+
+      expect(right.isOnScreen, isFalse);
+      expect(right.direction.dx, greaterThan(0));
+      expect(left.direction.dx, lessThan(0));
+      expect(up.direction.dy, lessThan(0));
+    },
+  );
+
+  test('target guide detects when target enters the capture viewport', () {
+    final guide = targetGuideDirection(
+      currentYaw: 10,
+      currentPitch: 5,
+      targetYaw: 13,
+      targetPitch: 7,
+      horizontalFov: 55,
+      verticalFov: 72,
+    );
+    expect(guide.isOnScreen, isTrue);
+  });
 }
