@@ -14,6 +14,7 @@ private struct MotionPose {
   let pitch: Double
   let roll: Double
   let rotationRate: Double
+  let linearAccelerationG: Double
   let quaternion: CMQuaternion
 
   var dictionary: [String: Any] {
@@ -23,6 +24,7 @@ private struct MotionPose {
       "pitch": pitch,
       "roll": roll,
       "rotationRate": rotationRate,
+      "linearAccelerationG": linearAccelerationG,
       "quaternion": ["w": quaternion.w, "x": quaternion.x, "y": quaternion.y, "z": quaternion.z]
     ]
   }
@@ -125,12 +127,16 @@ final class SphereCameraPlugin: NSObject, FlutterPlugin, FlutterStreamHandler {
       let yaw = atan2(forwardX, forwardY) * 180.0 / .pi
       let pitch = asin(max(-1.0, min(1.0, forwardZ))) * 180.0 / .pi
       let rate = sqrt(pow(motion.rotationRate.x, 2) + pow(motion.rotationRate.y, 2) + pow(motion.rotationRate.z, 2))
+      let acceleration = sqrt(
+        pow(motion.userAcceleration.x, 2) + pow(motion.userAcceleration.y, 2) + pow(motion.userAcceleration.z, 2)
+      )
       let pose = MotionPose(
         monotonicTime: motion.timestamp,
         yaw: yaw,
         pitch: pitch,
         roll: motion.attitude.roll * 180.0 / .pi,
         rotationRate: rate,
+        linearAccelerationG: acceleration,
         quaternion: motion.attitude.quaternion
       )
       MotionPoseStore.shared.append(pose)
@@ -144,6 +150,7 @@ final class SphereCameraPlugin: NSObject, FlutterPlugin, FlutterStreamHandler {
         "pitch": pose.pitch,
         "roll": pose.roll,
         "rotationRate": pose.rotationRate,
+        "linearAccelerationG": pose.linearAccelerationG,
         "monotonicTimestampSec": pose.monotonicTime
       ])
     }
@@ -330,6 +337,7 @@ final class SphereCameraView: NSObject, FlutterPlatformView {
   private let sessionQueue = DispatchQueue(label: "camera360.sphere.capture", qos: .userInitiated)
   private var camera: AVCaptureDevice?
   private var acceptedPhotoCount = 0
+  private var captureControlsLocked = false
   private var photoProcessors: [Int64: PhotoCaptureProcessor] = [:]
   private var visualReferences: [VisualReference] = []
 
@@ -400,12 +408,15 @@ final class SphereCameraView: NSObject, FlutterPlatformView {
     } catch { }
   }
 
-  private func lockWhiteBalanceAfterFirstAcceptedPhoto() {
-    guard acceptedPhotoCount == 1, let camera, camera.isWhiteBalanceModeSupported(.locked) else { return }
+  private func lockCaptureControlsAfterFirstAcceptedPhoto() {
+    guard acceptedPhotoCount == 1, let camera else { return }
     do {
       try camera.lockForConfiguration()
-      camera.whiteBalanceMode = .locked
+      if camera.isFocusModeSupported(.locked) { camera.focusMode = .locked }
+      if camera.isExposureModeSupported(.locked) { camera.exposureMode = .locked }
+      if camera.isWhiteBalanceModeSupported(.locked) { camera.whiteBalanceMode = .locked }
       camera.unlockForConfiguration()
+      captureControlsLocked = true
     } catch { }
   }
 
@@ -432,8 +443,10 @@ final class SphereCameraView: NSObject, FlutterPlatformView {
       "verticalFovDegrees": landscapeHorizontalFov,
       "minFocusDistanceMeters": minimumFocusDistanceMeters,
       "supportsDepth": photoOutput.isDepthDataDeliverySupported,
+      "supportsCalibrationData": photoOutput.isCameraCalibrationDataDeliverySupported,
       "qualityPrioritization": "quality",
-      "exposureLockUsed": false,
+      "captureControlsLocked": captureControlsLocked,
+      "exposureLockUsed": captureControlsLocked,
       "whiteBalanceLockAfterFirstFrame": true
     ]
   }
@@ -473,6 +486,9 @@ final class SphereCameraView: NSObject, FlutterPlatformView {
     settings.photoQualityPrioritization = .quality
     settings.isHighResolutionPhotoEnabled = photoOutput.isHighResolutionCaptureEnabled
     settings.isAutoStillImageStabilizationEnabled = true
+    if photoOutput.isCameraCalibrationDataDeliverySupported {
+      settings.isCameraCalibrationDataDeliveryEnabled = true
+    }
     let requestPose = MotionPoseStore.shared.latest
     let processor = PhotoCaptureProcessor(
       sessionId: sessionId,
@@ -505,7 +521,7 @@ final class SphereCameraView: NSObject, FlutterPlatformView {
             )
           }
         }
-        self.lockWhiteBalanceAfterFirstAcceptedPhoto()
+        self.lockCaptureControlsAfterFirstAcceptedPhoto()
       }
     }
     photoProcessors[settings.uniqueID] = processor
@@ -567,7 +583,7 @@ private final class PhotoCaptureProcessor: NSObject, AVCapturePhotoCaptureDelega
     let exposureMonotonicTime = photo.timestamp.isValid ? photo.timestamp.seconds : ProcessInfo.processInfo.systemUptime
     let pose = MotionPoseStore.shared.nearest(to: exposureMonotonicTime) ?? requestPose
     let capturedAtMs = Int((Date().timeIntervalSince1970 - (ProcessInfo.processInfo.systemUptime - exposureMonotonicTime)) * 1000.0)
-    let quality = FrameQualityAnalyzer.analyze(data: data, visualReference: visualReference)
+    let quality = FrameQualityAnalyzer.analyze(data: data, visualReference: visualReference, pose: pose)
     guard quality.accepted || (allowImuFallback && quality.canUseImuFallback) else {
       result(FlutterError(
         code: "qualityRejected",
@@ -643,6 +659,22 @@ private final class PhotoCaptureProcessor: NSObject, AVCapturePhotoCaptureDelega
     if let vFov = cameraInfo["verticalFovDegrees"] as? Double, vFov > 0, height > 0 {
       intrinsics["fyPixels"] = Double(height) / (2.0 * tan(vFov * .pi / 360.0))
     }
+    if let calibration = photo.cameraCalibrationData {
+      let matrix = calibration.intrinsicMatrix
+      intrinsics["avFoundationCalibration"] = [
+        "intrinsicMatrix": [
+          [matrix.columns.0.x, matrix.columns.0.y, matrix.columns.0.z],
+          [matrix.columns.1.x, matrix.columns.1.y, matrix.columns.1.z],
+          [matrix.columns.2.x, matrix.columns.2.y, matrix.columns.2.z]
+        ],
+        "referenceWidth": calibration.intrinsicMatrixReferenceDimensions.width,
+        "referenceHeight": calibration.intrinsicMatrixReferenceDimensions.height,
+        "distortionCenterX": calibration.lensDistortionCenter.x,
+        "distortionCenterY": calibration.lensDistortionCenter.y,
+        "lensDistortionLookupTableBase64": calibration.lensDistortionLookupTable?.base64EncodedString() ?? "",
+        "inverseLensDistortionLookupTableBase64": calibration.inverseLensDistortionLookupTable?.base64EncodedString() ?? ""
+      ]
+    }
     var qualityMetadata = quality.dictionary
     qualityMetadata["usedImuFallback"] = usedImuFallback
     return [
@@ -656,7 +688,7 @@ private final class PhotoCaptureProcessor: NSObject, AVCapturePhotoCaptureDelega
         "exposureTimeSeconds": exposureTime,
         "fNumber": fNumber,
         "whiteBalanceLocked": cameraInfo["whiteBalanceLockAfterFirstFrame"] as? Bool ?? false,
-        "exposureLockUsed": false
+        "exposureLockUsed": cameraInfo["captureControlsLocked"] as? Bool ?? false
       ],
       "quality": qualityMetadata,
       "coordinateFrame": "coreMotionReferenceZUpRearCameraV2"
@@ -676,7 +708,10 @@ private struct FrameQuality {
   var canUseImuFallback: Bool {
     !reasons.contains("tooDark") &&
       !reasons.contains("overexposed") &&
-      !reasons.contains("decodeFailed")
+      !reasons.contains("decodeFailed") &&
+      !reasons.contains("motionAtExposure") &&
+      !reasons.contains("translationRisk") &&
+      !reasons.contains("blurOrLowTexture")
   }
 
   var message: String {
@@ -685,6 +720,8 @@ private struct FrameQuality {
     if reasons.contains("visualRegistrationFailed") {
       return "Không tìm đủ điểm trùng với ảnh bên cạnh — quay chậm và giữ nguyên vị trí."
     }
+    if reasons.contains("translationRisk") { return "Điện thoại đang bị dịch chuyển — giữ ống kính tại một điểm cố định." }
+    if reasons.contains("motionAtExposure") { return "Máy chưa đứng yên — giữ chắc điện thoại rồi chụp lại." }
     return "Ảnh bị rung hoặc thiếu chi tiết — giữ máy yên và chụp lại."
   }
 
@@ -702,7 +739,7 @@ private struct FrameQuality {
 private enum FrameQualityAnalyzer {
   private static let context = CIContext(options: [.cacheIntermediates: false])
 
-  static func analyze(data: Data, visualReference: CGImage?) -> FrameQuality {
+  static func analyze(data: Data, visualReference: CGImage?, pose: MotionPose?) -> FrameQuality {
     guard
       let image = CIImage(data: data, options: [.applyOrientationProperty: true]),
       !image.extent.isEmpty
@@ -726,6 +763,8 @@ private enum FrameQualityAnalyzer {
     if brightness < 0.025 { reasons.append("tooDark") }
     if brightness > 0.985 { reasons.append("overexposed") }
     if sharpness < 0.010 { reasons.append("blurOrLowTexture") }
+    if let pose, pose.rotationRate > 0.15 { reasons.append("motionAtExposure") }
+    if let pose, pose.linearAccelerationG > 0.10 { reasons.append("translationRisk") }
     let registrationImage = makeScaledImage(image, maximumDimension: 640)
     let mosaicImage = makeScaledImage(image, maximumDimension: 1280)
     var visualRegistration = visualReference == nil ? "firstOrNoNearbyReference" : "failed"

@@ -128,6 +128,21 @@ Không chọn engine chỉ bằng sharpness/coverage. Cần mở `report.html` v
 cạnh cửa, cửa sổ, song sắt, đường chân tường, vùng overlap, thiên đỉnh và nadir
 để đánh giá ghosting, đường gãy, seam và exposure.
 
+Mỗi kết quả hiện có `qualityDecision` và report HTML hiển thị quality gate:
+
+- `PASS`: đủ điều kiện kỹ thuật tự động;
+- `REVIEW`: cần kiểm tra seam/cạnh kiến trúc hoặc engine đã bỏ frame;
+- `RECAPTURE`: match graph bị tách hay frame capture không đạt;
+- `FAILED`: không tạo được panorama.
+
+OpenStitching worker thật được khởi chạy từ `POST /v1/sessions/{id}/stitch`.
+Không publish ảnh cho khách chỉ vì job đã tạo được JPEG; chỉ publish tự động khi
+`commercialReady: true`.
+
+Trên iOS, app khóa focus/exposure/white balance sau frame đầu, chặn auto-shutter
+khi rotation hoặc linear acceleration còn cao, và lưu camera calibration của
+AVFoundation khi thiết bị/cấu hình capture cung cấp dữ liệu này.
+
 Phân tích APK: [docs/reverse-forensic.md](docs/reverse-forensic.md)  
 Nguồn Google/paper/video: [docs/google-sources.md](docs/google-sources.md)  
 Trạng thái và giới hạn: [docs/reverse-notes.md](docs/reverse-notes.md)

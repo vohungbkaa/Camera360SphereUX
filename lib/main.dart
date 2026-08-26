@@ -238,6 +238,7 @@ class _CaptureScreenState extends State<CaptureScreen> {
   final Map<int, int> qualityRejectCounts = <int, int>{};
   bool isCapturing = false;
   bool movingTooFast = false;
+  bool translationRisk = false;
   bool motionAvailable = true;
   double? originYaw;
   double? originPitch;
@@ -316,6 +317,8 @@ class _CaptureScreenState extends State<CaptureScreen> {
       return;
     }
     final rate = (event['rotationRate'] as num?)?.toDouble() ?? 0;
+    final acceleration =
+        (event['linearAccelerationG'] as num?)?.toDouble() ?? 0;
     var yaw = (event['yaw'] as num?)?.toDouble();
     var pitch = (event['pitch'] as num?)?.toDouble();
     var roll = (event['roll'] as num?)?.toDouble() ?? 0;
@@ -340,7 +343,8 @@ class _CaptureScreenState extends State<CaptureScreen> {
     final relativePitch = (pitch - originPitch!).clamp(-90.0, 90.0);
     final nearest = _nearestUncapturedTarget(relativeYaw, relativePitch);
     final now = DateTime.now();
-    final tooFast = rate > .70;
+    final translating = acceleration > .10;
+    final tooFast = rate > .70 || translating;
     final hitAngle =
         2 + ((rate.clamp(.1745, .6981) - .1745) / (.6981 - .1745)) * 1.5;
     final distance = nearest == null
@@ -373,6 +377,7 @@ class _CaptureScreenState extends State<CaptureScreen> {
     setState(() {
       motionAvailable = true;
       movingTooFast = tooFast;
+      translationRisk = translating;
       showTooFast =
           tooFastSince != null &&
           now.difference(tooFastSince!) >= const Duration(milliseconds: 250);
@@ -620,7 +625,11 @@ class _CaptureScreenState extends State<CaptureScreen> {
                   'Thiết bị cần cảm biến con quay hồi chuyển',
                 )
               else if (showTooFast)
-                const _CaptureMessage('Quá nhanh — hãy giữ yên')
+                _CaptureMessage(
+                  translationRisk
+                      ? 'Không dịch chuyển máy — giữ ống kính tại một điểm'
+                      : 'Quá nhanh — hãy giữ yên',
+                )
               else if (isCapturing)
                 const _CaptureMessage('Đang chụp…')
               else if (captureIssue != null)

@@ -3,13 +3,15 @@ from __future__ import annotations
 import json
 import os
 import re
+import subprocess
+import sys
 import uuid
 from datetime import datetime, timezone
 from pathlib import Path
 from threading import Lock
 from typing import Any
 
-from fastapi import FastAPI, File, Form, HTTPException, UploadFile
+from fastapi import BackgroundTasks, FastAPI, File, Form, HTTPException, UploadFile
 from fastapi.responses import FileResponse
 from pydantic import BaseModel
 
@@ -155,8 +157,42 @@ def complete_session(session_id: str, request: CompleteRequest) -> dict[str, Any
     return {"id": session_id, "frameCount": len(request.frames), "status": "captured"}
 
 
+def run_stitch_job(directory: Path, job_path: Path, job_id: str) -> None:
+    output_dir = directory / "stitches" / job_id
+    command = [
+        sys.executable,
+        str(Path(__file__).with_name("stitch_benchmark.py")),
+        "openstitching",
+        str(directory),
+        "--input-max-edge", "2400",
+        "--output", str(output_dir),
+    ]
+    completed = subprocess.run(command, capture_output=True, text=True)
+    with WRITE_LOCK:
+        job = json.loads(job_path.read_text(encoding="utf-8"))
+        job["finishedAt"] = utc_now()
+        job["log"] = (completed.stdout + completed.stderr)[-12000:]
+        report_path = output_dir / "report.json"
+        if completed.returncode == 0 and report_path.exists():
+            report = json.loads(report_path.read_text(encoding="utf-8"))
+            result = report.get("results", [{}])[0]
+            quality = result.get("qualityDecision", {})
+            job.update({
+                "status": "completed" if quality.get("commercialReady") else "needs_review",
+                "qualityStatus": quality.get("status", "UNKNOWN"),
+                "qualityDecision": quality,
+                "panoramaPath": result.get("output"),
+                "reportPath": str(report_path),
+            })
+            append_event(directory, "stitch.completed", jobId=job_id, qualityStatus=job["qualityStatus"])
+        else:
+            job.update({"status": "failed", "message": "Stitching worker failed"})
+            append_event(directory, "stitch.failed", jobId=job_id)
+        write_json(job_path, job)
+
+
 @app.post("/v1/sessions/{session_id}/stitch")
-def start_stitch(session_id: str) -> dict[str, Any]:
+def start_stitch(session_id: str, background_tasks: BackgroundTasks) -> dict[str, Any]:
     directory = require_session(session_id)
     if not (directory / "manifest.json").exists():
         raise HTTPException(409, "Complete the capture before stitching")
@@ -166,12 +202,35 @@ def start_stitch(session_id: str) -> dict[str, Any]:
         "sessionId": session_id,
         "status": "queued",
         "createdAt": utc_now(),
-        "message": "Capture inputs are ready; stitching worker is not connected yet.",
+        "message": "OpenStitching worker queued with commercial quality gate.",
     }
     with WRITE_LOCK:
         write_json(directory / "jobs" / f"{job_id}.json", job)
         append_event(directory, "stitch.queued", jobId=job_id)
+    background_tasks.add_task(run_stitch_job, directory, directory / "jobs" / f"{job_id}.json", job_id)
     return job
+
+
+@app.get("/v1/sessions/{session_id}/jobs/{job_id}")
+def get_stitch_job(session_id: str, job_id: str) -> dict[str, Any]:
+    directory = require_session(session_id)
+    path = directory / "jobs" / f"{safe_id(job_id, 'job id')}.json"
+    if not path.exists():
+        raise HTTPException(404, "Stitch job not found")
+    return json.loads(path.read_text(encoding="utf-8"))
+
+
+@app.get("/v1/sessions/{session_id}/jobs/{job_id}/panorama")
+def get_stitch_panorama(session_id: str, job_id: str) -> FileResponse:
+    directory = require_session(session_id)
+    job_path = directory / "jobs" / f"{safe_id(job_id, 'job id')}.json"
+    if not job_path.exists():
+        raise HTTPException(404, "Stitch job not found")
+    job = json.loads(job_path.read_text(encoding="utf-8"))
+    panorama = Path(job.get("panoramaPath", ""))
+    if not panorama.is_file() or directory not in panorama.resolve().parents:
+        raise HTTPException(409, "Panorama is not ready")
+    return FileResponse(panorama, media_type="image/jpeg")
 
 
 @app.get("/v1/sessions")

@@ -13,6 +13,10 @@ backend/data/sessions/<session-id>/
     frame-0.json
   jobs/
     stitch-<uuid>.json
+  stitches/
+    stitch-<uuid>/
+      openstitching/panorama.jpg
+      report.json
 ```
 
 Chạy local trên máy Mac:
@@ -23,6 +27,15 @@ python3 -m venv .venv
 .venv/bin/uvicorn backend.app:app --host 0.0.0.0 --port 8080
 ```
 
-Kiểm tra bằng `http://localhost:8080/health` và
-`http://localhost:8080/v1/sessions`. Endpoint stitch hiện tạo job `queued`; worker
-feature matching/bundle adjustment/blending sẽ được nối vào job này ở bước sau.
+`POST /v1/sessions/{sessionId}/stitch` chạy OpenStitching trong background và
+ghi trạng thái thực vào `jobs/<jobId>.json`. Theo dõi và tải kết quả bằng:
+
+```text
+GET /v1/sessions/{sessionId}/jobs/{jobId}
+GET /v1/sessions/{sessionId}/jobs/{jobId}/panorama
+```
+
+Job chỉ có `status: completed` khi quality gate trả `PASS`. Kết quả có graph
+matching bị tách, bỏ frame, frame rung/mờ hoặc metadata capture lỗi sẽ trả
+`needs_review`, `RECAPTURE` hoặc `failed`; backend không coi việc sinh được JPEG
+là thành công thương mại.

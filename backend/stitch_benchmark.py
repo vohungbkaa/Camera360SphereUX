@@ -17,6 +17,8 @@ from typing import Any
 import cv2 as cv
 import numpy as np
 
+from quality_gate import evaluate_quality, parse_match_graph
+
 
 PROJECT_ROOT = Path(__file__).resolve().parents[1]
 DEFAULT_SESSIONS_ROOT = PROJECT_ROOT / "backend" / "data" / "sessions"
@@ -84,6 +86,7 @@ def prepare_inputs(session: Path, destination: Path, maximum_edge: int) -> dict[
                 "targetId": metadata.get("targetId"),
                 "expectedPose": metadata.get("expectedPose"),
                 "capturePose": metadata.get("capture", {}).get("pose"),
+                "captureQuality": metadata.get("capture", {}).get("quality"),
                 "exifOrientation": orientation,
                 "preparedWidth": int(image.shape[1]),
                 "preparedHeight": int(image.shape[0]),
@@ -183,6 +186,9 @@ def run_openstitching(
         "output": str(output),
         **image_metrics(output),
     }
+    mapping = json.loads((inputs / "mapping.json").read_text(encoding="utf-8"))
+    graph = parse_match_graph(graph_path, [Path(path).name for path in image_paths])
+    result["qualityDecision"] = evaluate_quality(result, mapping, graph)
     write_result(output_dir, result)
     return result
 
@@ -286,6 +292,8 @@ hugin_executor --stitching --prefix=/output/panorama /output/final.pto
         "output": str(output),
         **image_metrics(output),
     }
+    mapping = json.loads((inputs / "mapping.json").read_text(encoding="utf-8"))
+    result["qualityDecision"] = evaluate_quality(result, mapping)
     write_result(output_dir, result)
     return result
 
@@ -340,6 +348,10 @@ def write_comparison(run_dir: Path, results: list[dict[str, Any]], failures: lis
         "createdAt": datetime.now().astimezone().isoformat(),
         "results": results,
         "failures": failures,
+        "commercialDecision": {
+            result["engine"]: result.get("qualityDecision", {}).get("status", "UNKNOWN")
+            for result in results
+        },
         "interpretation": {
             "nonBlackCoverage": "Coverage only; a higher value does not prove better seams.",
             "laplacianVariance": "Sharpness proxy; compare only outputs with similar resolution.",
@@ -355,10 +367,11 @@ def write_comparison(run_dir: Path, results: list[dict[str, Any]], failures: lis
         metrics = "".join(
             f"<li><b>{html.escape(str(key))}</b>: {html.escape(str(value))}</li>"
             for key, value in result.items()
-            if key not in {"output", "usedFrameNames", "warnings"}
+            if key not in {"output", "usedFrameNames", "warnings", "qualityDecision"}
         )
         cards.append(
             f"<section><h2>{html.escape(result['engine'])}</h2>"
+            f"<h3>Quality gate: {html.escape(result.get('qualityDecision', {}).get('status', 'UNKNOWN'))}</h3>"
             f"<img src='{html.escape(str(relative))}'><ul>{metrics}</ul></section>"
         )
     failure_html = "".join(
