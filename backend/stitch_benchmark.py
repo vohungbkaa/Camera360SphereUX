@@ -3,13 +3,11 @@ from __future__ import annotations
 import argparse
 import html
 import json
-import os
 import re
 import shutil
 import subprocess
 import sys
 import time
-import warnings
 from datetime import datetime
 from pathlib import Path
 from typing import Any
@@ -17,7 +15,10 @@ from typing import Any
 import cv2 as cv
 import numpy as np
 
-from quality_gate import evaluate_quality, parse_match_graph
+try:
+    from .quality_gate import evaluate_quality
+except ImportError:  # Direct execution: python backend/stitch_benchmark.py
+    from quality_gate import evaluate_quality
 
 
 PROJECT_ROOT = Path(__file__).resolve().parents[1]
@@ -56,6 +57,8 @@ def prepare_inputs(session: Path, destination: Path, maximum_edge: int) -> dict[
     source_frames = sorted((session / "frames").glob("*.jpg"), key=natural_frame_key)
     mapping: list[dict[str, Any]] = []
     horizontal_fovs: list[float] = []
+    vertical_fovs: list[float] = []
+    hugin_input_fovs: list[float] = []
     for index, source in enumerate(source_frames):
         image = cv.imread(str(source), cv.IMREAD_COLOR | cv.IMREAD_IGNORE_ORIENTATION)
         if image is None:
@@ -64,21 +67,58 @@ def prepare_inputs(session: Path, destination: Path, maximum_edge: int) -> dict[
         orientation = int(
             metadata.get("capture", {}).get("intrinsics", {}).get("exifOrientation", 1)
         )
-        image = apply_exif_orientation(image, orientation)
-        height, width = image.shape[:2]
-        if maximum_edge > 0 and max(width, height) > maximum_edge:
+        oriented = apply_exif_orientation(image, orientation)
+        height, width = oriented.shape[:2]
+        output = destination / f"sphere-{index:03d}.jpg"
+        # Production uses maximum_edge=0. Keep the exact JPEG bytes: decoding,
+        # rotating and encoding again would throw away detail before Hugin sees it.
+        if maximum_edge <= 0:
+            shutil.copy2(source, output)
+        elif max(width, height) > maximum_edge:
             scale = maximum_edge / max(width, height)
-            image = cv.resize(
-                image,
+            oriented = cv.resize(
+                oriented,
                 (round(width * scale), round(height * scale)),
                 interpolation=cv.INTER_AREA,
             )
-        output = destination / f"sphere-{index:03d}.jpg"
-        if not cv.imwrite(str(output), image, [cv.IMWRITE_JPEG_QUALITY, 97]):
-            raise RuntimeError(f"Cannot write prepared input {output}")
+            if not cv.imwrite(str(output), oriented, [cv.IMWRITE_JPEG_QUALITY, 100]):
+                raise RuntimeError(f"Cannot write prepared input {output}")
+            height, width = oriented.shape[:2]
+            orientation = 1
+        else:
+            shutil.copy2(source, output)
         intrinsics = metadata.get("capture", {}).get("intrinsics", {})
         if value := intrinsics.get("horizontalFovDegrees"):
             horizontal_fovs.append(float(value))
+        if value := intrinsics.get("verticalFovDegrees"):
+            vertical_fovs.append(float(value))
+        horizontal_fov = intrinsics.get("horizontalFovDegrees")
+        vertical_fov = intrinsics.get("verticalFovDegrees")
+        input_fov = vertical_fov if orientation in {5, 6, 7, 8} else horizontal_fov
+        if input_fov:
+            hugin_input_fovs.append(float(input_fov))
+        capture_quality = dict(metadata.get("capture", {}).get("quality") or {})
+        luma = cv.cvtColor(oriented, cv.COLOR_BGR2GRAY)
+        luma_height, luma_width = luma.shape
+        center = luma[
+            luma_height // 10 : luma_height - luma_height // 10,
+            luma_width // 10 : luma_width - luma_width // 10,
+        ]
+        clipped_ratio = float(np.mean(center > 245))
+        dark_ratio = float(np.mean(center < 16))
+        mean_luma = float(np.mean(center) / 255.0)
+        reasons = list(capture_quality.get("reasons") or [])
+        if clipped_ratio > 0.18 or mean_luma > 0.96:
+            reasons.append("overexposed")
+        if dark_ratio > 0.60 or mean_luma < 0.025:
+            reasons.append("tooDark")
+        capture_quality.update({
+            "accepted": capture_quality.get("accepted") is not False and not reasons,
+            "reasons": list(dict.fromkeys(reasons)),
+            "serverMeanLuma": round(mean_luma, 5),
+            "serverDarkPixelRatio": round(dark_ratio, 5),
+            "serverClippedHighlightRatio": round(clipped_ratio, 5),
+        })
         mapping.append(
             {
                 "prepared": output.name,
@@ -86,10 +126,10 @@ def prepare_inputs(session: Path, destination: Path, maximum_edge: int) -> dict[
                 "targetId": metadata.get("targetId"),
                 "expectedPose": metadata.get("expectedPose"),
                 "capturePose": metadata.get("capture", {}).get("pose"),
-                "captureQuality": metadata.get("capture", {}).get("quality"),
+                "captureQuality": capture_quality,
                 "exifOrientation": orientation,
-                "preparedWidth": int(image.shape[1]),
-                "preparedHeight": int(image.shape[0]),
+                "preparedWidth": int(width),
+                "preparedHeight": int(height),
             }
         )
     manifest_path = session / "manifest.json"
@@ -102,10 +142,13 @@ def prepare_inputs(session: Path, destination: Path, maximum_edge: int) -> dict[
     result = {
         "sessionId": session.name,
         "productType": product_type,
-        "isFullSphere": product_type == "360",
+        "isFullSphere": bool(manifest.get("isClosedLoop"))
+        or product_type in {"360", "360-horizontal"},
         "frameCount": len(mapping),
         "maximumInputEdge": maximum_edge,
         "horizontalFovDegrees": float(np.median(horizontal_fovs)) if horizontal_fovs else 53.5,
+        "verticalFovDegrees": float(np.median(vertical_fovs)) if vertical_fovs else 72.0,
+        "huginInputFovDegrees": float(np.median(hugin_input_fovs)) if hugin_input_fovs else 53.5,
         "frames": mapping,
     }
     (destination / "mapping.json").write_text(
@@ -128,71 +171,6 @@ def apply_exif_orientation(image: np.ndarray, orientation: int) -> np.ndarray:
     return operations.get(orientation, lambda value: value)(image)
 
 
-def run_openstitching(
-    inputs: Path, output_dir: Path, is_full_sphere: bool
-) -> dict[str, Any]:
-    from stitching import Stitcher
-
-    output_dir.mkdir(parents=True, exist_ok=False)
-    image_paths = [str(path) for path in sorted(inputs.glob("sphere-*.jpg"))]
-    graph_path = output_dir / "matches-graph.dot"
-    started = time.monotonic()
-    settings = {
-        "detector": "sift",
-        "nfeatures": 2000,
-        "matcher_type": "homography",
-        "range_width": -1,
-        "confidence_threshold": 0.25,
-        "matches_graph_dot_file": str(graph_path),
-        "estimator": "homography",
-        "adjuster": "ray",
-        "refinement_mask": "xxxxx",
-        "wave_correct_kind": "horiz",
-        "warper_type": "spherical",
-        "medium_megapix": 0.5,
-        "low_megapix": 0.1,
-        "final_megapix": -1,
-        # Preserve the 2:1 canvas for a complete sphere, but remove unused black
-        # space for a deliberately partial/wide panorama.
-        "crop": not is_full_sphere,
-        "compensator": "gain_blocks",
-        "finder": "dp_color",
-        "blender_type": "multiband",
-        "blend_strength": 5,
-    }
-    (output_dir / "settings.json").write_text(
-        json.dumps(settings, indent=2), encoding="utf-8"
-    )
-    caught: list[str] = []
-    with warnings.catch_warnings(record=True) as warning_records:
-        warnings.simplefilter("always")
-        stitcher = Stitcher(**settings)
-        panorama = stitcher.stitch(image_paths)
-        caught = [str(record.message) for record in warning_records]
-    output = output_dir / "panorama.jpg"
-    if panorama is None or not cv.imwrite(
-        str(output), panorama, [cv.IMWRITE_JPEG_QUALITY, 97]
-    ):
-        raise RuntimeError("OpenStitching did not produce a panorama")
-    used = [Path(name).name for name in stitcher.images.names]
-    result = {
-        "engine": "openstitching-0.6.1",
-        "status": "completed",
-        "seconds": round(time.monotonic() - started, 3),
-        "inputFrames": len(image_paths),
-        "usedFrames": len(used),
-        "usedFrameNames": used,
-        "warnings": caught,
-        "output": str(output),
-        **image_metrics(output),
-    }
-    mapping = json.loads((inputs / "mapping.json").read_text(encoding="utf-8"))
-    graph = parse_match_graph(graph_path, [Path(path).name for path in image_paths])
-    result["qualityDecision"] = evaluate_quality(result, mapping, graph)
-    write_result(output_dir, result)
-    return result
-
-
 def run_hugin(
     inputs: Path,
     output_dir: Path,
@@ -204,6 +182,9 @@ def run_hugin(
     output_dir.mkdir(parents=True, exist_ok=False)
     input_mount = str(inputs.resolve())
     output_mount = str(output_dir.resolve())
+    mapping = json.loads((inputs / "mapping.json").read_text(encoding="utf-8"))
+    if canvas_width <= 0:
+        canvas_width = derive_canvas_width(mapping)
     canvas_height = canvas_width // 2
     matcher = {
         "prealigned": "--prealigned",
@@ -214,10 +195,13 @@ def run_hugin(
     # axis/FOV is not yet fully calibrated. Homography RANSAC tolerates that
     # calibration error while --prealigned still limits the candidate pairs.
     ransac_mode = "hom"
-    output_fov = "360x180" if is_full_sphere else "AUTO"
-    output_crop = (
-        f"0,{canvas_width},0,{canvas_height}" if is_full_sphere else "AUTO"
-    )
+    # A single closed horizontal ring is 360° around but intentionally retains
+    # only the camera's maximum vertical field instead of inventing black poles.
+    # A horizontal capture ring must retain all source vertical pixels. Do not
+    # synthesize a 180-degree canvas with empty zenith/nadir just because yaw
+    # closes at 360 degrees; Photo Sphere Viewer receives the crop geometry.
+    output_fov = "360xAUTO"
+    output_crop = "AUTO"
     script = r"""
 set -euo pipefail
 pto_gen --projection=0 --fov="$HFOV" --sort -o /output/project.pto /input/sphere-*.jpg
@@ -226,11 +210,11 @@ cpfind "$MATCHER" --ransacmode="$RANSAC_MODE" --ransacdist=10 --minmatches=8 \
   --sieve2width=5 --sieve2height=5 --sieve2size=2 \
   -o /output/control-points.pto /output/prealigned.pto
 cpclean --max-distance=1.0 -o /output/clean.pto /output/control-points.pto
-autooptimiser -a -l -s -o /output/optimized.pto /output/clean.pto
+autooptimiser -a -l -m -s -o /output/optimized.pto /output/clean.pto
 pano_modify --straighten --center --projection=2 --fov="$OUTPUT_FOV" \
   --canvas="$CANVAS_WIDTH"x"$CANVAS_HEIGHT" \
   --crop="$OUTPUT_CROP" \
-  --ldr-file=JPG --ldr-compression=97 \
+  --ldr-file=JPG --ldr-compression=100 \
   -o /output/final.pto /output/optimized.pto
 hugin_executor --stitching --prefix=/output/panorama /output/final.pto
 """
@@ -292,16 +276,82 @@ hugin_executor --stitching --prefix=/output/panorama /output/final.pto
         "output": str(output),
         **image_metrics(output),
     }
-    mapping = json.loads((inputs / "mapping.json").read_text(encoding="utf-8"))
+    result["viewerConfig"] = panorama_viewer_config(
+        output_dir / "final.pto", is_closed_loop=is_full_sphere
+    )
     result["qualityDecision"] = evaluate_quality(result, mapping)
     write_result(output_dir, result)
     return result
+
+
+def derive_canvas_width(mapping: dict[str, Any]) -> int:
+    source_height = max(frame["preparedHeight"] for frame in mapping["frames"])
+    vertical_fov = max(1.0, float(mapping.get("verticalFovDegrees", 72.0)))
+    # A 360 equirectangular canvas at the source pixels/degree preserves every
+    # available vertical pixel instead of silently downscaling it.
+    width = int(np.ceil(source_height * 360.0 / vertical_fov))
+    return width + width % 2
 
 
 def count_pto_images(path: Path) -> int:
     if not path.exists():
         return 0
     return sum(1 for line in path.read_text(encoding="utf-8", errors="replace").splitlines() if line.startswith("i "))
+
+
+def panorama_viewer_config(path: Path, *, is_closed_loop: bool) -> dict[str, Any]:
+    """Map Hugin's cropped equirectangular canvas into a full 360x180 sphere."""
+    line = next(
+        (value for value in path.read_text(encoding="utf-8", errors="replace").splitlines() if value.startswith("p ")),
+        "",
+    )
+    width_match = re.search(r"(?:^|\s)w(\d+)", line)
+    height_match = re.search(r"(?:^|\s)h(\d+)", line)
+    fov_match = re.search(r"(?:^|\s)v([-+0-9.eE]+)", line)
+    crop_match = re.search(r'(?:^|\s)S"?(\d+),(\d+),(\d+),(\d+)"?', line)
+    if not (width_match and height_match and fov_match and crop_match):
+        return {}
+    canvas_width = int(width_match.group(1))
+    canvas_height = int(height_match.group(1))
+    horizontal_fov = float(fov_match.group(1))
+    left, right, top, bottom = (int(crop_match.group(i)) for i in range(1, 5))
+    if canvas_width <= 0 or canvas_height <= 0 or horizontal_fov <= 0:
+        return {}
+
+    canvas_pixels_per_degree = canvas_width / horizontal_fov
+    sphere_width = int(round(canvas_pixels_per_degree * 360.0))
+    sphere_height = int(round(canvas_pixels_per_degree * 180.0))
+    scale = sphere_width / canvas_width
+    vertical_fov = canvas_height / canvas_pixels_per_degree
+    sphere_left = int(round((180.0 - horizontal_fov / 2.0) * canvas_pixels_per_degree * scale))
+    sphere_top = int(round((90.0 - vertical_fov / 2.0) * canvas_pixels_per_degree * scale))
+    cropped_x = sphere_left + int(round(left * scale))
+    cropped_y = sphere_top + int(round(top * scale))
+    cropped_width = max(1, int(round((right - left) * scale)))
+    cropped_height = max(1, int(round((bottom - top) * scale)))
+    min_yaw = cropped_x / sphere_width * 360.0 - 180.0
+    max_yaw = (cropped_x + cropped_width) / sphere_width * 360.0 - 180.0
+    max_pitch = 90.0 - cropped_y / sphere_height * 180.0
+    min_pitch = 90.0 - (cropped_y + cropped_height) / sphere_height * 180.0
+    config: dict[str, Any] = {
+        "panoData": {
+            "fullWidth": sphere_width,
+            "fullHeight": sphere_height,
+            "croppedWidth": cropped_width,
+            "croppedHeight": cropped_height,
+            "croppedX": cropped_x,
+            "croppedY": cropped_y,
+        },
+        "minimumPitchDegrees": round(min_pitch, 4),
+        "maximumPitchDegrees": round(max_pitch, 4),
+        "initialPitchDegrees": round((min_pitch + max_pitch) / 2.0, 4),
+        "initialYawDegrees": round((min_yaw + max_yaw) / 2.0, 4),
+        "horizontalWrap": is_closed_loop,
+    }
+    if not is_closed_loop:
+        config["minimumYawDegrees"] = round(min_yaw, 4)
+        config["maximumYawDegrees"] = round(max_yaw, 4)
+    return config
 
 
 def parse_hugin_rms(path: Path) -> float | None:
@@ -390,12 +440,11 @@ def write_comparison(run_dir: Path, results: list[dict[str, Any]], failures: lis
 
 def parse_args() -> argparse.Namespace:
     parser = argparse.ArgumentParser(
-        description="Run Hugin and/or OpenStitching against one Camera360 session."
+        description="Run the Hugin production stitcher against one Camera360 session."
     )
-    parser.add_argument("engine", choices=("hugin", "openstitching", "compare"))
     parser.add_argument("session", help="Session id or path to a session directory")
-    parser.add_argument("--input-max-edge", type=int, default=1600, help="0 keeps full resolution")
-    parser.add_argument("--canvas-width", type=int, default=4096, help="Hugin 2:1 output width")
+    parser.add_argument("--input-max-edge", type=int, default=0, help="0 keeps original JPEG bytes")
+    parser.add_argument("--canvas-width", type=int, default=0, help="0 derives width from source vertical resolution")
     parser.add_argument(
         "--hugin-match",
         choices=("prealigned", "allpairs", "multirow"),
@@ -415,30 +464,21 @@ def main() -> int:
     prepared = prepare_inputs(session, run_dir / "inputs", args.input_max_edge)
     results: list[dict[str, Any]] = []
     failures: list[dict[str, str]] = []
-    engines = ("hugin", "openstitching") if args.engine == "compare" else (args.engine,)
-    for engine in engines:
-        print(f"[{engine}] starting", flush=True)
-        try:
-            if engine == "hugin":
-                result = run_hugin(
-                    run_dir / "inputs",
-                    run_dir / "hugin",
-                    prepared["horizontalFovDegrees"],
-                    args.canvas_width,
-                    args.hugin_match,
-                    prepared["isFullSphere"],
-                )
-            else:
-                result = run_openstitching(
-                    run_dir / "inputs",
-                    run_dir / "openstitching",
-                    prepared["isFullSphere"],
-                )
-            results.append(result)
-            print(f"[{engine}] completed in {result['seconds']}s: {result['output']}", flush=True)
-        except Exception as error:  # Keep compare mode useful if one engine fails.
-            failures.append({"engine": engine, "error": str(error)})
-            print(f"[{engine}] failed: {error}", file=sys.stderr, flush=True)
+    print("[hugin] starting", flush=True)
+    try:
+        result = run_hugin(
+            run_dir / "inputs",
+            run_dir / "hugin",
+            prepared["huginInputFovDegrees"],
+            args.canvas_width,
+            args.hugin_match,
+            prepared["isFullSphere"],
+        )
+        results.append(result)
+        print(f"[hugin] completed in {result['seconds']}s: {result['output']}", flush=True)
+    except Exception as error:
+        failures.append({"engine": "hugin", "error": str(error)})
+        print(f"[hugin] failed: {error}", file=sys.stderr, flush=True)
     write_comparison(run_dir, results, failures)
     print(f"Report: {run_dir / 'report.html'}")
     return 0 if results else 1

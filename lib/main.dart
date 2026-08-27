@@ -4,6 +4,8 @@ import 'dart:math' as math;
 import 'package:flutter/material.dart';
 import 'package:flutter/services.dart';
 
+import 'app_config.dart';
+import 'panorama_viewer.dart';
 import 'server_session_client.dart';
 
 Future<void> main() async {
@@ -260,11 +262,9 @@ class _CaptureScreenState extends State<CaptureScreen> {
   @override
   void initState() {
     super.initState();
-    const serverUrl = String.fromEnvironment(
-      'CAMERA360_SERVER_URL',
-      defaultValue: 'http://192.168.1.6:8080',
+    server = ServerSessionClient(
+      baseUrl: Uri.parse(AppConfig.camera360ServerUrl),
     );
-    server = ServerSessionClient(baseUrl: Uri.parse(serverUrl));
     server.createSession(requestedId: localSessionId).catchError((_) {});
     motionSubscription = const EventChannel('sphere-camera/motion')
         .receiveBroadcastStream()
@@ -502,6 +502,31 @@ class _CaptureScreenState extends State<CaptureScreen> {
   Future<void> finishCapture() async {
     if (capturedTargets.isEmpty || isCapturing) return;
     final isFullSphere = capturedTargets.length == targets.length;
+    if (!isFullSphere) {
+      final stitchWide = await showDialog<bool>(
+        context: context,
+        builder: (context) => AlertDialog(
+          title: const Text('Chưa đủ một vòng 360°'),
+          content: Text(
+            'Bạn mới chụp ${capturedTargets.length}/${targets.length} hướng. '
+            'Nếu ghép ngay, kết quả chỉ là panorama góc rộng, không thể quay đủ 360°.',
+          ),
+          actions: [
+            TextButton(
+              onPressed: () => Navigator.pop(context, false),
+              child: const Text('Tiếp tục chụp'),
+            ),
+            FilledButton(
+              onPressed: () => Navigator.pop(context, true),
+              child: const Text('Ghép góc rộng'),
+            ),
+          ],
+        ),
+      );
+      if (stitchWide != true || !mounted) return;
+    }
+    String? jobId;
+    String? submitError;
     try {
       await Future.wait(pendingUploads.values.toList(), eagerError: false);
       await server.complete(
@@ -518,11 +543,13 @@ class _CaptureScreenState extends State<CaptureScreen> {
               },
             )
             .toList(),
-        productType: isFullSphere ? '360' : 'wide-panorama',
+        productType: isFullSphere ? '360-horizontal' : 'wide-panorama',
         isClosedLoop: isFullSphere,
       );
-      await server.startStitch();
+      jobId = await server.startStitch();
+      if (jobId == null) throw StateError('Backend không trả về mã xử lý.');
     } catch (error) {
+      submitError = error.toString();
       if (mounted) {
         ScaffoldMessenger.of(context).showSnackBar(
           SnackBar(
@@ -535,7 +562,12 @@ class _CaptureScreenState extends State<CaptureScreen> {
       await Navigator.pushReplacement(
         context,
         MaterialPageRoute(
-          builder: (_) => ProcessingScreen(isFullSphere: isFullSphere),
+          builder: (_) => ProcessingScreen(
+            isFullSphere: isFullSphere,
+            server: server,
+            jobId: jobId,
+            initialError: submitError,
+          ),
         ),
       );
     }
@@ -721,19 +753,11 @@ List<SphereTarget> buildSphereTargets({
   // derived from the active lens FOV and decreases with latitude, matching the
   // geometry expected by a spherical stitcher instead of assuming one device.
   final yawStep = (horizontalFovDegrees * .58).clamp(24.0, 40.0);
-  final pitchStep = (verticalFovDegrees * .50).clamp(28.0, 42.0);
   final horizonCount = (360 / yawStep).ceil().clamp(9, 16);
   addRing(0, horizonCount);
-  for (var pitch = pitchStep; pitch < 82; pitch += pitchStep) {
-    final ringCount = (horizonCount * math.cos(pitch * math.pi / 180))
-        .round()
-        .clamp(3, horizonCount);
-    final offset = 180 / ringCount;
-    addRing(pitch, ringCount, offset: offset);
-    addRing(-pitch, ringCount, offset: offset);
-  }
-  targets.add(SphereTarget(targets.length, 0, 90));
-  targets.add(SphereTarget(targets.length, 0, -90));
+  // Capture one closed horizontal ring. Each native camera keeps its maximum
+  // portrait height, so users only rotate in one direction and Hugin retains
+  // the complete vertical field of every original frame.
   return targets;
 }
 
@@ -909,21 +933,6 @@ class _DoneProgressButton extends StatelessWidget {
   );
 }
 
-class _CameraBackdrop extends StatelessWidget {
-  const _CameraBackdrop();
-  @override
-  Widget build(BuildContext context) => const DecoratedBox(
-    decoration: BoxDecoration(
-      gradient: RadialGradient(
-        center: Alignment.center,
-        radius: 1.1,
-        colors: [Color(0xFF466D77), Color(0xFF152A33), Colors.black],
-        stops: [0, .52, 1],
-      ),
-    ),
-  );
-}
-
 class _TargetPainter extends CustomPainter {
   const _TargetPainter({
     required this.targets,
@@ -1090,24 +1099,64 @@ class _TargetPainter extends CustomPainter {
 }
 
 class ProcessingScreen extends StatefulWidget {
-  const ProcessingScreen({required this.isFullSphere, super.key});
+  const ProcessingScreen({
+    required this.isFullSphere,
+    required this.server,
+    required this.jobId,
+    this.initialError,
+    super.key,
+  });
 
   final bool isFullSphere;
+  final ServerSessionClient server;
+  final String? jobId;
+  final String? initialError;
   @override
   State<ProcessingScreen> createState() => _ProcessingScreenState();
 }
 
 class _ProcessingScreenState extends State<ProcessingScreen> {
-  double progress = 0;
   Timer? timer;
+  String status = 'queued';
+  String? error;
+  Map<String, dynamic>? qualityDecision;
+  Map<String, dynamic> viewerConfig = const {};
+
   @override
   void initState() {
     super.initState();
-    timer = Timer.periodic(const Duration(milliseconds: 100), (_) {
+    error = widget.initialError;
+    if (widget.jobId != null && error == null) {
+      _poll();
+      timer = Timer.periodic(const Duration(seconds: 2), (_) => _poll());
+    }
+  }
+
+  Future<void> _poll() async {
+    final jobId = widget.jobId;
+    if (jobId == null || !mounted) return;
+    try {
+      final job = await widget.server.getStitchJob(jobId);
       if (!mounted) return;
-      setState(() => progress = (progress + .025).clamp(0, 1));
-      if (progress >= 1) timer?.cancel();
-    });
+      final nextStatus = job['status'] as String? ?? 'queued';
+      setState(() {
+        status = nextStatus;
+        qualityDecision = job['qualityDecision'] as Map<String, dynamic>?;
+        viewerConfig =
+            (job['viewerConfig'] as Map?)?.cast<String, dynamic>() ?? const {};
+        error = null;
+        if (nextStatus == 'failed') {
+          error = (job['message'] as String?) ?? 'Hugin không ghép được ảnh.';
+        }
+      });
+      if (nextStatus == 'completed' ||
+          nextStatus == 'needs_review' ||
+          nextStatus == 'failed') {
+        timer?.cancel();
+      }
+    } catch (exception) {
+      if (mounted) setState(() => error = exception.toString());
+    }
   }
 
   @override
@@ -1143,23 +1192,43 @@ class _ProcessingScreenState extends State<ProcessingScreen> {
               style: TextStyle(color: Color(0xFF9AAEC3)),
             ),
             const SizedBox(height: 28),
-            LinearProgressIndicator(value: progress, minHeight: 8),
+            if (error == null &&
+                status != 'completed' &&
+                status != 'needs_review')
+              const LinearProgressIndicator(minHeight: 8),
             const SizedBox(height: 12),
             Text(
-              '${(progress * 100).round()}%',
+              error != null
+                  ? 'Không thể xử lý: $error'
+                  : status == 'queued'
+                  ? 'Đang chờ Hugin…'
+                  : status == 'needs_review'
+                  ? (qualityDecision?['status'] == 'RECAPTURE'
+                        ? 'Đã ghép — có ảnh nguồn cần chụp lại'
+                        : 'Đã ghép — cần kiểm tra chất lượng')
+                  : status == 'completed'
+                  ? 'Hoàn thành'
+                  : 'Hugin đang căn chỉnh và hòa trộn ảnh…',
+              textAlign: TextAlign.center,
               style: const TextStyle(
                 color: Color(0xFF7CE2FF),
                 fontWeight: FontWeight.w700,
               ),
             ),
-            if (progress >= 1) ...[
+            if (status == 'completed' || status == 'needs_review') ...[
               const SizedBox(height: 26),
               FilledButton.icon(
                 onPressed: () => Navigator.pushReplacement(
                   context,
                   MaterialPageRoute(
-                    builder: (_) =>
-                        ViewerScreen(isFullSphere: widget.isFullSphere),
+                    builder: (_) => ViewerScreen(
+                      isFullSphere: widget.isFullSphere,
+                      panoramaUri: widget.server.panoramaUri(widget.jobId!),
+                      viewerConfig: viewerConfig,
+                      qualityWarning: status == 'needs_review'
+                          ? _qualityWarning(qualityDecision)
+                          : null,
+                    ),
                   ),
                 ),
                 icon: Icon(
@@ -1177,10 +1246,31 @@ class _ProcessingScreenState extends State<ProcessingScreen> {
   );
 }
 
+String? _qualityWarning(Map<String, dynamic>? decision) {
+  final qualityStatus = decision?['status'] as String?;
+  if (qualityStatus == null) return null;
+  if (qualityStatus != 'RECAPTURE') return qualityStatus;
+  final issues = decision?['captureIssues'] as List? ?? const [];
+  if (issues.isEmpty) return 'RECAPTURE — cần chụp lại ảnh nguồn';
+  final issue = (issues.first as Map).cast<String, dynamic>();
+  final target = issue['targetId']?.toString() ?? 'frame';
+  final reasons = (issue['reasons'] as List? ?? const []).join(', ');
+  return 'RECAPTURE — $target: $reasons';
+}
+
 class ViewerScreen extends StatelessWidget {
-  const ViewerScreen({required this.isFullSphere, super.key});
+  const ViewerScreen({
+    required this.isFullSphere,
+    required this.panoramaUri,
+    required this.viewerConfig,
+    this.qualityWarning,
+    super.key,
+  });
 
   final bool isFullSphere;
+  final Uri panoramaUri;
+  final Map<String, dynamic> viewerConfig;
+  final String? qualityWarning;
   @override
   Widget build(BuildContext context) => Scaffold(
     backgroundColor: Colors.black,
@@ -1194,34 +1284,25 @@ class ViewerScreen extends StatelessWidget {
     body: Stack(
       fit: StackFit.expand,
       children: [
-        const _CameraBackdrop(),
-        Center(
-          child: Column(
-            mainAxisSize: MainAxisSize.min,
-            children: [
-              Icon(
-                isFullSphere
-                    ? Icons.threesixty_rounded
-                    : Icons.panorama_horizontal_rounded,
-                size: 68,
-                color: Color(0xFF7CE2FF),
+        PanoramaViewer(uri: panoramaUri, viewerConfig: viewerConfig),
+        if (qualityWarning != null)
+          SafeArea(
+            child: Align(
+              alignment: Alignment.topCenter,
+              child: Container(
+                margin: const EdgeInsets.all(12),
+                padding: const EdgeInsets.symmetric(
+                  horizontal: 14,
+                  vertical: 9,
+                ),
+                decoration: BoxDecoration(
+                  color: const Color(0xDD7A4D00),
+                  borderRadius: BorderRadius.circular(12),
+                ),
+                child: Text('Cần kiểm tra chất lượng: $qualityWarning'),
               ),
-              SizedBox(height: 16),
-              Text(
-                isFullSphere
-                    ? 'Kéo để xem xung quanh'
-                    : 'Kéo để xem toàn bộ góc rộng',
-                style: TextStyle(fontSize: 18, fontWeight: FontWeight.w700),
-              ),
-              SizedBox(height: 6),
-              Text(
-                'Bản demo viewer — ảnh ghép sẽ được kết nối ở bước tiếp theo',
-                style: TextStyle(color: Colors.white70),
-                textAlign: TextAlign.center,
-              ),
-            ],
+            ),
           ),
-        ),
       ],
     ),
   );

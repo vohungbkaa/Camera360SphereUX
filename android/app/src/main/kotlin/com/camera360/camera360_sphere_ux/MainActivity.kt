@@ -33,6 +33,7 @@ import io.flutter.plugin.platform.PlatformViewFactory
 import java.io.File
 import java.io.FileOutputStream
 import java.util.concurrent.atomic.AtomicBoolean
+import kotlin.math.atan
 import kotlin.math.sqrt
 
 class MainActivity : FlutterActivity(), EventChannel.StreamHandler, SensorEventListener {
@@ -58,14 +59,19 @@ class MainActivity : FlutterActivity(), EventChannel.StreamHandler, SensorEventL
             .setStreamHandler(this)
         MethodChannel(flutterEngine.dartExecutor.binaryMessenger, "sphere-camera/methods")
             .setMethodCallHandler { call, result ->
-                if (call.method != "capturePhoto") {
-                    result.notImplemented()
-                    return@setMethodCallHandler
-                }
-                val sessionId = call.argument<String>("sessionId") ?: System.currentTimeMillis().toString()
                 val view = cameraView
-                if (view == null) result.error("cameraUnavailable", "Camera preview chưa sẵn sàng.", null)
-                else view.capturePhoto(sessionId, result)
+                when (call.method) {
+                    "getCameraInfo" -> {
+                        if (view == null) result.error("cameraUnavailable", "Camera preview chưa sẵn sàng.", null)
+                        else result.success(view.cameraInfo())
+                    }
+                    "capturePhoto" -> {
+                        val sessionId = call.argument<String>("sessionId") ?: System.currentTimeMillis().toString()
+                        if (view == null) result.error("cameraUnavailable", "Camera preview chưa sẵn sàng.", null)
+                        else view.capturePhoto(sessionId, result)
+                    }
+                    else -> result.notImplemented()
+                }
             }
         if (!hasCameraPermission()) {
             ActivityCompat.requestPermissions(this, arrayOf(Manifest.permission.CAMERA), CAMERA_PERMISSION_REQUEST)
@@ -145,6 +151,10 @@ private class SphereCameraPlatformView(private val activity: Activity) : Platfor
     private var imageReader: ImageReader? = null
     private var previewSurface: Surface? = null
     private var sensorOrientation = 90
+    private var jpegWidth = 0
+    private var jpegHeight = 0
+    private var horizontalFovDegrees = 55.0
+    private var verticalFovDegrees = 72.0
     private var pendingResult: MethodChannel.Result? = null
     private var pendingSessionId: String? = null
     private val opening = AtomicBoolean(false)
@@ -179,9 +189,19 @@ private class SphereCameraPlatformView(private val activity: Activity) : Platfor
             sensorOrientation = characteristics.get(CameraCharacteristics.SENSOR_ORIENTATION) ?: 90
             val sizes = characteristics.get(CameraCharacteristics.SCALER_STREAM_CONFIGURATION_MAP)
                 ?.getOutputSizes(android.graphics.ImageFormat.JPEG)
-                ?.filter { it.width.toLong() * it.height <= 12_000_000L }
             val jpegSize = sizes?.maxByOrNull { it.width.toLong() * it.height }
                 ?: android.util.Size(1920, 1080)
+            jpegWidth = jpegSize.width
+            jpegHeight = jpegSize.height
+            val sensorSize = characteristics.get(CameraCharacteristics.SENSOR_INFO_PHYSICAL_SIZE)
+            val focalLength = characteristics.get(CameraCharacteristics.LENS_INFO_AVAILABLE_FOCAL_LENGTHS)
+                ?.firstOrNull()?.toDouble()
+            if (sensorSize != null && focalLength != null && focalLength > 0) {
+                val landscapeHorizontal = 2.0 * atan(sensorSize.width / (2.0 * focalLength)) * 180.0 / Math.PI
+                val landscapeVertical = 2.0 * atan(sensorSize.height / (2.0 * focalLength)) * 180.0 / Math.PI
+                horizontalFovDegrees = landscapeVertical
+                verticalFovDegrees = landscapeHorizontal
+            }
             imageReader = ImageReader.newInstance(
                 jpegSize.width, jpegSize.height, android.graphics.ImageFormat.JPEG, 2,
             ).also { reader -> reader.setOnImageAvailableListener({ saveImage(it) }, backgroundHandler) }
@@ -192,6 +212,18 @@ private class SphereCameraPlatformView(private val activity: Activity) : Platfor
             pendingResult = null
         }
     }
+
+    fun cameraInfo(): Map<String, Any> = mapOf(
+        "available" to (cameraDevice != null),
+        "pixelWidth" to jpegHeight,
+        "pixelHeight" to jpegWidth,
+        "encodedPixelWidth" to jpegWidth,
+        "encodedPixelHeight" to jpegHeight,
+        "exifOrientation" to if (sensorOrientation == 270) 8 else if (sensorOrientation == 90) 6 else 1,
+        "horizontalFovDegrees" to horizontalFovDegrees,
+        "verticalFovDegrees" to verticalFovDegrees,
+        "qualityPrioritization" to "maximum-jpeg-resolution",
+    )
 
     private val cameraStateCallback = object : CameraDevice.StateCallback() {
         override fun onOpened(camera: CameraDevice) {
@@ -264,6 +296,7 @@ private class SphereCameraPlatformView(private val activity: Activity) : Platfor
                 set(CaptureRequest.CONTROL_AF_MODE, CaptureRequest.CONTROL_AF_MODE_CONTINUOUS_PICTURE)
                 set(CaptureRequest.CONTROL_AE_MODE, CaptureRequest.CONTROL_AE_MODE_ON)
                 set(CaptureRequest.JPEG_ORIENTATION, sensorOrientation)
+                set(CaptureRequest.JPEG_QUALITY, 100.toByte())
             }
             session.capture(request.build(), null, backgroundHandler)
         } catch (error: Exception) {
@@ -289,7 +322,14 @@ private class SphereCameraPlatformView(private val activity: Activity) : Platfor
             val file = File(directory, "frame-${System.currentTimeMillis()}.jpg")
             FileOutputStream(file).use { it.write(bytes) }
             activity.runOnUiThread {
-                result.success(mapOf("path" to file.absolutePath, "capturedAtMs" to System.currentTimeMillis()))
+                result.success(
+                    mapOf(
+                        "path" to file.absolutePath,
+                        "capturedAtMs" to System.currentTimeMillis(),
+                        "intrinsics" to cameraInfo(),
+                        "quality" to mapOf("accepted" to true, "validation" to "nativeUnavailable"),
+                    ),
+                )
             }
         } catch (error: Exception) {
             activity.runOnUiThread { result.error("storageFailed", error.message, null) }

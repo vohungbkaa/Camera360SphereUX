@@ -1,0 +1,22 @@
+<!doctype html>
+<html lang="vi">
+  <head>
+    <meta charset="utf-8" />
+    <meta name="viewport" content="width=device-width, initial-scale=1, maximum-scale=1, user-scalable=no" />
+    <meta name="color-scheme" content="dark" />
+    <link rel="stylesheet" href="photo_sphere_viewer.css" />
+    <link rel="stylesheet" href="viewer.css" />
+    <title>Camera 360 Viewer</title>
+  </head>
+  <body>
+    <main id="viewer" aria-label="Ảnh toàn cảnh 360 độ"></main>
+    <script src="photo_sphere_viewer.bundle.js"></script>
+    <script src="viewer_runtime.js"></script>
+    <script>
+      window.Camera360Viewer.initialize(Object.assign(
+        { panorama: __PANORAMA_FILE__ },
+        __PANORAMA_CONFIG__
+      ));
+    </script>
+  </body>
+</html>

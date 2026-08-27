@@ -75,7 +75,7 @@ final class ServerSessionClient {
     required bool isClosedLoop,
   }) async {
     final sessionId = remoteSessionId;
-    if (sessionId == null) return;
+    if (sessionId == null) throw StateError('Session server chưa được tạo.');
     final response = await _client.post(
       baseUrl.resolve('/v1/sessions/$sessionId/complete'),
       headers: {'Content-Type': 'application/json'},
@@ -98,6 +98,24 @@ final class ServerSessionClient {
     _check(response);
     return (jsonDecode(response.body) as Map<String, dynamic>)['id'] as String?;
   }
+
+  Future<Map<String, dynamic>> getStitchJob(String jobId) async {
+    final sessionId = remoteSessionId;
+    if (sessionId == null) throw StateError('Session server chưa được tạo.');
+    final response = await _client.get(
+      baseUrl.resolve('/v1/sessions/$sessionId/jobs/$jobId'),
+    );
+    _check(response);
+    return jsonDecode(response.body) as Map<String, dynamic>;
+  }
+
+  Uri panoramaUri(String jobId) {
+    final sessionId = remoteSessionId;
+    if (sessionId == null) throw StateError('Session server chưa được tạo.');
+    return baseUrl.resolve('/v1/sessions/$sessionId/jobs/$jobId/panorama');
+  }
+
+  void close() => _client.close();
 
   void _check(http.Response response) {
     if (response.statusCode < 200 || response.statusCode >= 300) {

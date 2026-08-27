@@ -15,7 +15,7 @@ backend/data/sessions/<session-id>/
     stitch-<uuid>.json
   stitches/
     stitch-<uuid>/
-      openstitching/panorama.jpg
+      hugin/panorama.jpg
       report.json
 ```
 
@@ -27,7 +27,7 @@ python3 -m venv .venv
 .venv/bin/uvicorn backend.app:app --host 0.0.0.0 --port 8080
 ```
 
-`POST /v1/sessions/{sessionId}/stitch` chạy OpenStitching trong background và
+`POST /v1/sessions/{sessionId}/stitch` chạy Hugin 2024.0.1 trong background và
 ghi trạng thái thực vào `jobs/<jobId>.json`. Theo dõi và tải kết quả bằng:
 
 ```text
@@ -39,3 +39,8 @@ Job chỉ có `status: completed` khi quality gate trả `PASS`. Kết quả có
 matching bị tách, bỏ frame, frame rung/mờ hoặc metadata capture lỗi sẽ trả
 `needs_review`, `RECAPTURE` hoặc `failed`; backend không coi việc sinh được JPEG
 là thành công thương mại.
+
+Worker production truyền `--input-max-edge 0`: JPEG upload được sao chép nguyên
+byte vào Hugin, không resize hoặc re-encode. `--canvas-width 0` tự suy ra canvas
+từ chiều cao ảnh nguồn/vertical FOV; vòng chụp ngang 360° được auto-crop theo
+chiều dọc thật thay vì thêm vùng cực đen.

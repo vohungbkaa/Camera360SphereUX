@@ -34,16 +34,12 @@
 	<string>Kết nối máy xử lý Camera360 trong cùng mạng để ghép ảnh Sphere.</string>
 	<key>NSAppTransportSecurity</key>
 	<dict>
+		<!-- Development backend uses HTTP on a changing LAN IP. Use HTTPS and
+		     remove this exception before production distribution. -->
+		<key>NSAllowsArbitraryLoads</key>
+		<true/>
 		<key>NSAllowsLocalNetworking</key>
 		<true/>
-		<key>NSExceptionDomains</key>
-		<dict>
-			<key>192.168.1.6</key>
-			<dict>
-				<key>NSTemporaryExceptionAllowsInsecureHTTPLoads</key>
-				<true/>
-			</dict>
-		</dict>
 	</dict>
 	<key>UIApplicationSceneManifest</key>
 	<dict>

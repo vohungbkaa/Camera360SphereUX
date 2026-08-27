@@ -41,7 +41,9 @@ def seed(source: Path, mapping_path: Path, destination: Path) -> None:
                 # the sign lets cpfind's pose-aware RANSAC validate adjacent frames.
                 line = replace_token(line, "y", wrap_degrees(float(pose.get("yaw", 0.0))))
                 line = replace_token(line, "p", float(pose.get("pitch", 0.0)))
-                line = replace_token(line, "r", 0.0)
+                # Keep the roll emitted by pto_gen. For untouched portrait JPEGs
+                # this carries the lossless EXIF orientation (for example r90).
+                # Replacing it with zero would turn full-resolution inputs sideways.
                 matched += 1
         output.append(line)
     if matched != len(poses):

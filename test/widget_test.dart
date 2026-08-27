@@ -8,23 +8,16 @@ void main() {
     expect(find.text('Bắt đầu chụp'), findsOneWidget);
   });
 
-  test(
-    'target generator covers the complete sphere with stable identifiers',
-    () {
-      final targets = buildSphereTargets(
-        horizontalFovDegrees: 55,
-        verticalFovDegrees: 72,
-      );
-      expect(targets.length, greaterThan(30));
-      expect(targets.map((target) => target.id).toSet().length, targets.length);
-      expect(targets.any((target) => target.pitch == 90), isTrue);
-      expect(targets.any((target) => target.pitch == -90), isTrue);
-      expect(
-        targets.where((target) => target.pitch == 0).length,
-        greaterThan(8),
-      );
-    },
-  );
+  test('target generator covers one closed 360 ring', () {
+    final targets = buildSphereTargets(
+      horizontalFovDegrees: 55,
+      verticalFovDegrees: 72,
+    );
+    expect(targets.length, greaterThan(8));
+    expect(targets.map((target) => target.id).toSet().length, targets.length);
+    expect(targets.every((target) => target.pitch == 0), isTrue);
+    expect(targets.map((target) => target.yaw).toSet().length, targets.length);
+  });
 
   test('target density adapts to active camera field of view', () {
     final narrow = buildSphereTargets(

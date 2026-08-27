@@ -80,8 +80,10 @@ và intrinsics thật trong `capture` làm initial estimate cho bundle adjustmen
    graph không kín hoặc reprojection error vượt ngưỡng.
 6. Exposure/color compensation, seam optimization tránh cạnh kiến trúc và
    multiband blending.
-7. Xuất equirectangular 2:1 tối thiểu 3840×1920, nhúng GPano XMP và tạo quality
-   report gồm coverage, reprojection error, seam energy và rejected frames.
+7. Với vòng ngang 360°, xuất equirectangular 360° và giữ toàn bộ vertical FOV
+   thật (không ép 2:1 có cực đen); canvas lấy theo mật độ pixel/độ của chiều cao
+   ảnh gốc. Nhúng GPano XMP và tạo quality report gồm coverage, reprojection
+   error, seam energy và rejected frames.
 
 ## Điều kiện thương mại trước khi phát hành
 

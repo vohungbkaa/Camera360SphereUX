@@ -162,9 +162,9 @@ def run_stitch_job(directory: Path, job_path: Path, job_id: str) -> None:
     command = [
         sys.executable,
         str(Path(__file__).with_name("stitch_benchmark.py")),
-        "openstitching",
         str(directory),
-        "--input-max-edge", "2400",
+        "--input-max-edge", "0",
+        "--canvas-width", "0",
         "--output", str(output_dir),
     ]
     completed = subprocess.run(command, capture_output=True, text=True)
@@ -181,6 +181,7 @@ def run_stitch_job(directory: Path, job_path: Path, job_id: str) -> None:
                 "status": "completed" if quality.get("commercialReady") else "needs_review",
                 "qualityStatus": quality.get("status", "UNKNOWN"),
                 "qualityDecision": quality,
+                "viewerConfig": result.get("viewerConfig", {}),
                 "panoramaPath": result.get("output"),
                 "reportPath": str(report_path),
             })
@@ -202,7 +203,8 @@ def start_stitch(session_id: str, background_tasks: BackgroundTasks) -> dict[str
         "sessionId": session_id,
         "status": "queued",
         "createdAt": utc_now(),
-        "message": "OpenStitching worker queued with commercial quality gate.",
+        "engine": "hugin-2024.0.1",
+        "message": "Hugin worker queued with full-resolution inputs.",
     }
     with WRITE_LOCK:
         write_json(directory / "jobs" / f"{job_id}.json", job)
@@ -217,7 +219,20 @@ def get_stitch_job(session_id: str, job_id: str) -> dict[str, Any]:
     path = directory / "jobs" / f"{safe_id(job_id, 'job id')}.json"
     if not path.exists():
         raise HTTPException(404, "Stitch job not found")
-    return json.loads(path.read_text(encoding="utf-8"))
+    job = json.loads(path.read_text(encoding="utf-8"))
+    # Backfill geometry for jobs produced before viewerConfig was persisted.
+    if job.get("status") in {"completed", "needs_review"} and not job.get("viewerConfig"):
+        panorama = Path(job.get("panoramaPath", ""))
+        pto = panorama.parent / "final.pto"
+        manifest_path = directory / "manifest.json"
+        if pto.is_file() and manifest_path.is_file():
+            from backend.stitch_benchmark import panorama_viewer_config
+
+            manifest = json.loads(manifest_path.read_text(encoding="utf-8"))
+            job["viewerConfig"] = panorama_viewer_config(
+                pto, is_closed_loop=bool(manifest.get("isClosedLoop"))
+            )
+    return job
 
 
 @app.get("/v1/sessions/{session_id}/jobs/{job_id}/panorama")
@@ -230,7 +245,11 @@ def get_stitch_panorama(session_id: str, job_id: str) -> FileResponse:
     panorama = Path(job.get("panoramaPath", ""))
     if not panorama.is_file() or directory not in panorama.resolve().parents:
         raise HTTPException(409, "Panorama is not ready")
-    return FileResponse(panorama, media_type="image/jpeg")
+    return FileResponse(
+        panorama,
+        media_type="image/jpeg",
+        headers={"Access-Control-Allow-Origin": "*", "Cache-Control": "no-transform"},
+    )
 
 
 @app.get("/v1/sessions")

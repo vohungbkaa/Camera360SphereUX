@@ -36,6 +36,7 @@ dependencies:
   cupertino_icons: ^1.0.8
   http: ^1.5.0
   path_provider: ^2.1.5
+  webview_flutter: ^4.14.1
 
 dev_dependencies:
   flutter_test:
@@ -58,6 +59,12 @@ flutter:
   # included with your application, so that you can use the icons in
   # the material Icons class.
   uses-material-design: true
+  assets:
+    - assets/viewer/index.template.html
+    - assets/viewer/viewer.css
+    - assets/viewer/viewer_runtime.js
+    - assets/viewer/vendor/photo_sphere_viewer.bundle.js
+    - assets/viewer/vendor/photo_sphere_viewer.css
 
   # To add assets to your application, add an assets section, like this:
   # assets:

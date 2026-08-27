@@ -370,7 +370,15 @@ final class SphereCameraView: NSObject, FlutterPlatformView {
     if session.canAddOutput(photoOutput) {
       session.addOutput(photoOutput)
       photoOutput.isHighResolutionCaptureEnabled = true
-      photoOutput.maxPhotoQualityPrioritization = .quality
+      // `.balanced` keeps the same maximum pixel dimensions while avoiding the
+      // long computational-photo delay that can capture a different pose/light.
+      photoOutput.maxPhotoQualityPrioritization = .balanced
+      if #available(iOS 16.0, *),
+         let maximum = camera.activeFormat.supportedMaxPhotoDimensions.max(by: {
+           Int64($0.width) * Int64($0.height) < Int64($1.width) * Int64($1.height)
+         }) {
+        photoOutput.maxPhotoDimensions = maximum
+      }
     }
     session.commitConfiguration()
     configureContinuousCameraControls(camera)
@@ -408,8 +416,8 @@ final class SphereCameraView: NSObject, FlutterPlatformView {
     } catch { }
   }
 
-  private func lockCaptureControlsAfterFirstAcceptedPhoto() {
-    guard acceptedPhotoCount == 1, let camera else { return }
+  private func lockCaptureControlsBeforeFirstPhoto() -> Bool {
+    guard !captureControlsLocked, let camera else { return captureControlsLocked }
     do {
       try camera.lockForConfiguration()
       if camera.isFocusModeSupported(.locked) { camera.focusMode = .locked }
@@ -417,7 +425,10 @@ final class SphereCameraView: NSObject, FlutterPlatformView {
       if camera.isWhiteBalanceModeSupported(.locked) { camera.whiteBalanceMode = .locked }
       camera.unlockForConfiguration()
       captureControlsLocked = true
-    } catch { }
+      return true
+    } catch {
+      return false
+    }
   }
 
   func cameraInfo() -> [String: Any] {
@@ -444,10 +455,10 @@ final class SphereCameraView: NSObject, FlutterPlatformView {
       "minFocusDistanceMeters": minimumFocusDistanceMeters,
       "supportsDepth": photoOutput.isDepthDataDeliverySupported,
       "supportsCalibrationData": photoOutput.isCameraCalibrationDataDeliverySupported,
-      "qualityPrioritization": "quality",
+      "qualityPrioritization": "balanced-full-resolution",
       "captureControlsLocked": captureControlsLocked,
       "exposureLockUsed": captureControlsLocked,
-      "whiteBalanceLockAfterFirstFrame": true
+      "whiteBalanceLocked": captureControlsLocked
     ]
   }
 
@@ -478,13 +489,45 @@ final class SphereCameraView: NSObject, FlutterPlatformView {
     expectedYaw: Double,
     expectedPitch: Double,
     allowImuFallback: Bool,
-    result: @escaping FlutterResult
+    result: @escaping FlutterResult,
+    readinessAttempt: Int = 0
   ) {
     guard session.isRunning else { result(FlutterError(code: "cameraNotRunning", message: "Camera chưa chạy.", details: nil)); return }
+    if !captureControlsLocked {
+      guard let camera else {
+        result(FlutterError(code: "cameraUnavailable", message: "Camera chưa sẵn sàng.", details: nil))
+        return
+      }
+      if camera.isAdjustingFocus || camera.isAdjustingExposure || camera.isAdjustingWhiteBalance {
+        guard readinessAttempt < 20 else {
+          result(FlutterError(code: "cameraNotReady", message: "Camera chưa ổn định sáng/nét. Giữ máy yên rồi thử lại.", details: nil))
+          return
+        }
+        DispatchQueue.main.asyncAfter(deadline: .now() + 0.08) { [weak self] in
+          self?.capturePhoto(
+            sessionId: sessionId,
+            targetId: targetId,
+            expectedYaw: expectedYaw,
+            expectedPitch: expectedPitch,
+            allowImuFallback: allowImuFallback,
+            result: result,
+            readinessAttempt: readinessAttempt + 1
+          )
+        }
+        return
+      }
+      guard lockCaptureControlsBeforeFirstPhoto() else {
+        result(FlutterError(code: "cameraLockFailed", message: "Không khóa được sáng/nét cho chuỗi panorama.", details: nil))
+        return
+      }
+    }
     let settings = AVCapturePhotoSettings(format: [AVVideoCodecKey: AVVideoCodecType.jpeg])
     settings.flashMode = .off
-    settings.photoQualityPrioritization = .quality
+    settings.photoQualityPrioritization = .balanced
     settings.isHighResolutionPhotoEnabled = photoOutput.isHighResolutionCaptureEnabled
+    if #available(iOS 16.0, *) {
+      settings.maxPhotoDimensions = photoOutput.maxPhotoDimensions
+    }
     settings.isAutoStillImageStabilizationEnabled = true
     if photoOutput.isCameraCalibrationDataDeliverySupported {
       settings.isCameraCalibrationDataDeliveryEnabled = true
@@ -521,7 +564,10 @@ final class SphereCameraView: NSObject, FlutterPlatformView {
             )
           }
         }
-        self.lockCaptureControlsAfterFirstAcceptedPhoto()
+      } else if self.acceptedPhotoCount == 0, let camera = self.camera {
+        // A rejected first frame must be allowed to meter again before retry.
+        self.captureControlsLocked = false
+        self.configureContinuousCameraControls(camera)
       }
     }
     photoProcessors[settings.uniqueID] = processor
@@ -687,7 +733,7 @@ private final class PhotoCaptureProcessor: NSObject, AVCapturePhotoCaptureDelega
         "iso": isoValues?.first?.doubleValue ?? 0,
         "exposureTimeSeconds": exposureTime,
         "fNumber": fNumber,
-        "whiteBalanceLocked": cameraInfo["whiteBalanceLockAfterFirstFrame"] as? Bool ?? false,
+        "whiteBalanceLocked": cameraInfo["whiteBalanceLocked"] as? Bool ?? false,
         "exposureLockUsed": cameraInfo["captureControlsLocked"] as? Bool ?? false
       ],
       "quality": qualityMetadata,
@@ -699,6 +745,8 @@ private final class PhotoCaptureProcessor: NSObject, AVCapturePhotoCaptureDelega
 private struct FrameQuality {
   let sharpness: Double
   let brightness: Double
+  let darkPixelRatio: Double
+  let clippedHighlightRatio: Double
   let visualRegistration: String
   let registrationImage: CGImage?
   let mosaicImage: CGImage?
@@ -729,6 +777,8 @@ private struct FrameQuality {
     [
       "sharpness": sharpness,
       "brightness": brightness,
+      "darkPixelRatio": darkPixelRatio,
+      "clippedHighlightRatio": clippedHighlightRatio,
       "visualRegistration": visualRegistration,
       "accepted": accepted,
       "reasons": reasons
@@ -747,6 +797,8 @@ private enum FrameQualityAnalyzer {
       return FrameQuality(
         sharpness: 0,
         brightness: 0,
+        darkPixelRatio: 1,
+        clippedHighlightRatio: 0,
         visualRegistration: "decodeFailed",
         registrationImage: nil,
         mosaicImage: nil,
@@ -754,14 +806,15 @@ private enum FrameQualityAnalyzer {
         reasons: ["decodeFailed"]
       )
     }
-    let brightness = averageLuma(image)
+    let luma = lumaStatistics(image)
+    let brightness = luma.mean
     let edges = image
       .applyingFilter("CIPhotoEffectMono")
       .applyingFilter("CIEdges", parameters: [kCIInputIntensityKey: 1.0])
     let sharpness = averageLuma(edges)
     var reasons: [String] = []
-    if brightness < 0.025 { reasons.append("tooDark") }
-    if brightness > 0.985 { reasons.append("overexposed") }
+    if brightness < 0.025 || luma.darkRatio > 0.60 { reasons.append("tooDark") }
+    if brightness > 0.96 || luma.clippedRatio > 0.18 { reasons.append("overexposed") }
     if sharpness < 0.010 { reasons.append("blurOrLowTexture") }
     if let pose, pose.rotationRate > 0.15 { reasons.append("motionAtExposure") }
     if let pose, pose.linearAccelerationG > 0.10 { reasons.append("translationRisk") }
@@ -777,6 +830,8 @@ private enum FrameQualityAnalyzer {
     return FrameQuality(
       sharpness: sharpness,
       brightness: brightness,
+      darkPixelRatio: luma.darkRatio,
+      clippedHighlightRatio: luma.clippedRatio,
       visualRegistration: visualRegistration,
       registrationImage: registrationImage,
       mosaicImage: mosaicImage,
@@ -822,6 +877,50 @@ private enum FrameQualityAnalyzer {
       colorSpace: CGColorSpaceCreateDeviceRGB()
     )
     return (0.2126 * Double(pixel[0]) + 0.7152 * Double(pixel[1]) + 0.0722 * Double(pixel[2])) / 255.0
+  }
+
+  private static func lumaStatistics(_ image: CIImage) -> (mean: Double, darkRatio: Double, clippedRatio: Double) {
+    let extent = image.extent.integral
+    let scale = min(1.0, 256.0 / max(extent.width, extent.height))
+    let scaled = image.transformed(by: CGAffineTransform(scaleX: scale, y: scale))
+    let bounds = scaled.extent.integral
+    let width = max(1, Int(bounds.width))
+    let height = max(1, Int(bounds.height))
+    var pixels = [UInt8](repeating: 0, count: width * height * 4)
+    context.render(
+      scaled,
+      toBitmap: &pixels,
+      rowBytes: width * 4,
+      bounds: bounds,
+      format: .RGBA8,
+      colorSpace: CGColorSpaceCreateDeviceRGB()
+    )
+    let startX = width / 10
+    let endX = width - startX
+    let startY = height / 10
+    let endY = height - startY
+    var sum = 0.0
+    var dark = 0
+    var clipped = 0
+    var count = 0
+    for y in startY..<endY {
+      for x in startX..<endX {
+        let offset = (y * width + x) * 4
+        let value = 0.2126 * Double(pixels[offset])
+          + 0.7152 * Double(pixels[offset + 1])
+          + 0.0722 * Double(pixels[offset + 2])
+        sum += value
+        if value < 16 { dark += 1 }
+        if value > 245 { clipped += 1 }
+        count += 1
+      }
+    }
+    guard count > 0 else { return (0, 1, 0) }
+    return (
+      sum / Double(count) / 255.0,
+      Double(dark) / Double(count),
+      Double(clipped) / Double(count)
+    )
   }
 }
 
