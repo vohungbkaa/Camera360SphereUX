@@ -370,9 +370,9 @@ final class SphereCameraView: NSObject, FlutterPlatformView {
     if session.canAddOutput(photoOutput) {
       session.addOutput(photoOutput)
       photoOutput.isHighResolutionCaptureEnabled = true
-      // `.balanced` keeps the same maximum pixel dimensions while avoiding the
-      // long computational-photo delay that can capture a different pose/light.
-      photoOutput.maxPhotoQualityPrioritization = .balanced
+      // Panorama frames are captured only after the reticle is stable. Prefer
+      // Apple's full computational-photo pipeline over reduced capture latency.
+      photoOutput.maxPhotoQualityPrioritization = .quality
       if #available(iOS 16.0, *),
          let maximum = camera.activeFormat.supportedMaxPhotoDimensions.max(by: {
            Int64($0.width) * Int64($0.height) < Int64($1.width) * Int64($1.height)
@@ -455,7 +455,7 @@ final class SphereCameraView: NSObject, FlutterPlatformView {
       "minFocusDistanceMeters": minimumFocusDistanceMeters,
       "supportsDepth": photoOutput.isDepthDataDeliverySupported,
       "supportsCalibrationData": photoOutput.isCameraCalibrationDataDeliverySupported,
-      "qualityPrioritization": "balanced-full-resolution",
+      "qualityPrioritization": "quality-full-resolution",
       "captureControlsLocked": captureControlsLocked,
       "exposureLockUsed": captureControlsLocked,
       "whiteBalanceLocked": captureControlsLocked
@@ -523,7 +523,7 @@ final class SphereCameraView: NSObject, FlutterPlatformView {
     }
     let settings = AVCapturePhotoSettings(format: [AVVideoCodecKey: AVVideoCodecType.jpeg])
     settings.flashMode = .off
-    settings.photoQualityPrioritization = .balanced
+    settings.photoQualityPrioritization = .quality
     settings.isHighResolutionPhotoEnabled = photoOutput.isHighResolutionCaptureEnabled
     if #available(iOS 16.0, *) {
       settings.maxPhotoDimensions = photoOutput.maxPhotoDimensions
@@ -815,7 +815,7 @@ private enum FrameQualityAnalyzer {
     var reasons: [String] = []
     if brightness < 0.025 || luma.darkRatio > 0.60 { reasons.append("tooDark") }
     if brightness > 0.96 || luma.clippedRatio > 0.18 { reasons.append("overexposed") }
-    if sharpness < 0.010 { reasons.append("blurOrLowTexture") }
+    if sharpness < 0.018 { reasons.append("blurOrLowTexture") }
     if let pose, pose.rotationRate > 0.15 { reasons.append("motionAtExposure") }
     if let pose, pose.linearAccelerationG > 0.10 { reasons.append("translationRisk") }
     let registrationImage = makeScaledImage(image, maximumDimension: 640)

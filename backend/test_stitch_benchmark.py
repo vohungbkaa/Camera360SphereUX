@@ -79,6 +79,30 @@ class StitchInputQualityTest(unittest.TestCase):
         }
         self.assertEqual(derive_canvas_width(mapping), 20160)
 
+    def test_server_rejects_legacy_frame_below_capture_sharpness_floor(self) -> None:
+        with TemporaryDirectory() as temporary:
+            session = Path(temporary) / "session"
+            frames = session / "frames"
+            frames.mkdir(parents=True)
+            source = frames / "frame-0.jpg"
+            self.assertTrue(cv.imwrite(str(source), np.full((48, 64, 3), 127, dtype=np.uint8)))
+            (frames / "frame-0.json").write_text(
+                json.dumps({
+                    "capture": {
+                        "quality": {"accepted": True, "sharpness": 0.01176},
+                        "intrinsics": {"exifOrientation": 1},
+                    }
+                }),
+                encoding="utf-8",
+            )
+
+            prepared = prepare_inputs(session, Path(temporary) / "prepared", 0)
+            quality = prepared["frames"][0]["captureQuality"]
+
+            self.assertFalse(quality["accepted"])
+            self.assertIn("blurOrLowTexture", quality["reasons"])
+            self.assertEqual(quality["minimumAcceptedSharpness"], 0.018)
+
     def test_viewer_config_preserves_hugin_crop_position(self) -> None:
         with TemporaryDirectory() as temporary:
             pto = Path(temporary) / "final.pto"

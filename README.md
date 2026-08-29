@@ -10,7 +10,7 @@ thức của Google.
 - Orientation từ gyroscope/rotation vector hoặc CoreMotion.
 - Auto-shutter khi reticle trùng target và máy ổn định; không có shutter thủ công.
 - Target là một vòng ngang khép kín 360°, chống chụp lặp, Undo/Done/Cancel.
-- Camera lưu JPEG ở kích thước tối đa; app giữ trọn chiều dọc để người dùng chỉ
+- Camera lưu JPEG ở kích thước tối đa với quality prioritization; app giữ trọn chiều dọc để người dùng chỉ
   cần xoay theo một phương ngang.
 - Lưu frame cục bộ trước, upload bất đồng bộ đến Camera360 stitch server nếu có.
 - Trước ảnh đầu tiên, iOS chờ AE/AF/AWB ổn định rồi khóa các thông số cho cả

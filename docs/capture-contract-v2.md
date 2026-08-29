@@ -116,6 +116,9 @@ chuyển từ ảnh cuối về ảnh đầu. Khi chưa hoàn thành vòng, ngư
 - Test trên các đời iPhone/lens được hỗ trợ bằng bộ scene chuẩn: phòng nhỏ, cửa
   sổ sáng, tường trắng, cạnh tủ gần, gương, người di chuyển và ngoại cảnh.
 - Không tự chuyển ultra-wide/wide/tele giữa phiên; toàn bộ frame phải cùng lens.
+- iOS dùng `photoQualityPrioritization: quality` ở kích thước tối đa. Frame có
+  sharpness dưới `0.018` bị yêu cầu chụp lại trước khi stitch; backend kiểm tra
+  lại ngưỡng này để bảo vệ session từ client cũ.
 - Mã hóa khi truyền/lưu, consent rõ ràng và cơ chế xóa dữ liệu tài sản của khách.
 - Theo dõi crash, capture rejection, upload retry, stitch failure và thời gian
   xử lý; không upload log chứa ảnh hoặc vị trí nếu chưa được đồng ý.

@@ -1283,7 +1283,7 @@ String? _qualityWarning(Map<String, dynamic>? decision) {
   return 'RECAPTURE — $target: $reasons';
 }
 
-class ViewerScreen extends StatelessWidget {
+class ViewerScreen extends StatefulWidget {
   const ViewerScreen({
     required this.productType,
     required this.panoramaUri,
@@ -1296,15 +1296,47 @@ class ViewerScreen extends StatelessWidget {
   final Uri panoramaUri;
   final Map<String, dynamic> viewerConfig;
   final String? qualityWarning;
+
+  @override
+  State<ViewerScreen> createState() => _ViewerScreenState();
+}
+
+class _ViewerScreenState extends State<ViewerScreen> {
+  @override
+  void initState() {
+    super.initState();
+    if (widget.productType == 'horizontal-stitch') {
+      unawaited(
+        SystemChrome.setPreferredOrientations(const [
+          DeviceOrientation.portraitUp,
+          DeviceOrientation.landscapeLeft,
+          DeviceOrientation.landscapeRight,
+        ]),
+      );
+    }
+  }
+
+  @override
+  void dispose() {
+    if (widget.productType == 'horizontal-stitch') {
+      unawaited(
+        SystemChrome.setPreferredOrientations(const [
+          DeviceOrientation.portraitUp,
+        ]),
+      );
+    }
+    super.dispose();
+  }
+
   @override
   Widget build(BuildContext context) => Scaffold(
     backgroundColor: Colors.black,
     appBar: AppBar(
       backgroundColor: Colors.black,
       title: Text(
-        productType == 'horizontal-stitch'
+        widget.productType == 'horizontal-stitch'
             ? 'Ảnh ghép ngang'
-            : productType == 'horizontal-360'
+            : widget.productType == 'horizontal-360'
             ? 'Panorama 360° ngang'
             : 'Panorama góc rộng',
       ),
@@ -1315,11 +1347,14 @@ class ViewerScreen extends StatelessWidget {
     body: Stack(
       fit: StackFit.expand,
       children: [
-        if (productType == 'horizontal-stitch')
-          _FlatHorizontalImage(uri: panoramaUri)
+        if (widget.productType == 'horizontal-stitch')
+          _FlatHorizontalImage(uri: widget.panoramaUri)
         else
-          PanoramaViewer(uri: panoramaUri, viewerConfig: viewerConfig),
-        if (qualityWarning != null)
+          PanoramaViewer(
+            uri: widget.panoramaUri,
+            viewerConfig: widget.viewerConfig,
+          ),
+        if (widget.qualityWarning != null)
           SafeArea(
             child: Align(
               alignment: Alignment.topCenter,
@@ -1333,7 +1368,9 @@ class ViewerScreen extends StatelessWidget {
                   color: const Color(0xDD7A4D00),
                   borderRadius: BorderRadius.circular(12),
                 ),
-                child: Text('Cần kiểm tra chất lượng: $qualityWarning'),
+                child: Text(
+                  'Cần kiểm tra chất lượng: ${widget.qualityWarning}',
+                ),
               ),
             ),
           ),
