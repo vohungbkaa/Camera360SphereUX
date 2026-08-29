@@ -416,11 +416,15 @@ final class SphereCameraView: NSObject, FlutterPlatformView {
     } catch { }
   }
 
-  private func lockCaptureControlsBeforeFirstPhoto() -> Bool {
+  private func lockExposureAndWhiteBalanceBeforeFirstPhoto() -> Bool {
     guard !captureControlsLocked, let camera else { return captureControlsLocked }
     do {
       try camera.lockForConfiguration()
-      if camera.isFocusModeSupported(.locked) { camera.focusMode = .locked }
+      // Focus must follow the scene as the user turns. Locking it at frame 0
+      // makes later directions blurry when their subject distance changes.
+      if camera.isFocusModeSupported(.continuousAutoFocus) {
+        camera.focusMode = .continuousAutoFocus
+      }
       if camera.isExposureModeSupported(.locked) { camera.exposureMode = .locked }
       if camera.isWhiteBalanceModeSupported(.locked) { camera.whiteBalanceMode = .locked }
       camera.unlockForConfiguration()
@@ -457,6 +461,8 @@ final class SphereCameraView: NSObject, FlutterPlatformView {
       "supportsCalibrationData": photoOutput.isCameraCalibrationDataDeliverySupported,
       "qualityPrioritization": "quality-full-resolution",
       "captureControlsLocked": captureControlsLocked,
+      "focusLocked": camera.focusMode == .locked,
+      "focusMode": camera.focusMode.rawValue,
       "exposureLockUsed": captureControlsLocked,
       "whiteBalanceLocked": captureControlsLocked
     ]
@@ -493,31 +499,33 @@ final class SphereCameraView: NSObject, FlutterPlatformView {
     readinessAttempt: Int = 0
   ) {
     guard session.isRunning else { result(FlutterError(code: "cameraNotRunning", message: "Camera chưa chạy.", details: nil)); return }
+    guard let camera else {
+      result(FlutterError(code: "cameraUnavailable", message: "Camera chưa sẵn sàng.", details: nil))
+      return
+    }
+    let waitingForInitialControls = !captureControlsLocked &&
+      (camera.isAdjustingExposure || camera.isAdjustingWhiteBalance)
+    if camera.isAdjustingFocus || waitingForInitialControls {
+      guard readinessAttempt < 20 else {
+        result(FlutterError(code: "cameraNotReady", message: "Camera chưa ổn định sáng/nét. Giữ máy yên rồi thử lại.", details: nil))
+        return
+      }
+      DispatchQueue.main.asyncAfter(deadline: .now() + 0.08) { [weak self] in
+        self?.capturePhoto(
+          sessionId: sessionId,
+          targetId: targetId,
+          expectedYaw: expectedYaw,
+          expectedPitch: expectedPitch,
+          allowImuFallback: allowImuFallback,
+          result: result,
+          readinessAttempt: readinessAttempt + 1
+        )
+      }
+      return
+    }
     if !captureControlsLocked {
-      guard let camera else {
-        result(FlutterError(code: "cameraUnavailable", message: "Camera chưa sẵn sàng.", details: nil))
-        return
-      }
-      if camera.isAdjustingFocus || camera.isAdjustingExposure || camera.isAdjustingWhiteBalance {
-        guard readinessAttempt < 20 else {
-          result(FlutterError(code: "cameraNotReady", message: "Camera chưa ổn định sáng/nét. Giữ máy yên rồi thử lại.", details: nil))
-          return
-        }
-        DispatchQueue.main.asyncAfter(deadline: .now() + 0.08) { [weak self] in
-          self?.capturePhoto(
-            sessionId: sessionId,
-            targetId: targetId,
-            expectedYaw: expectedYaw,
-            expectedPitch: expectedPitch,
-            allowImuFallback: allowImuFallback,
-            result: result,
-            readinessAttempt: readinessAttempt + 1
-          )
-        }
-        return
-      }
-      guard lockCaptureControlsBeforeFirstPhoto() else {
-        result(FlutterError(code: "cameraLockFailed", message: "Không khóa được sáng/nét cho chuỗi panorama.", details: nil))
+      guard lockExposureAndWhiteBalanceBeforeFirstPhoto() else {
+        result(FlutterError(code: "cameraLockFailed", message: "Không khóa được sáng/màu cho chuỗi panorama.", details: nil))
         return
       }
     }
@@ -788,6 +796,10 @@ private struct FrameQuality {
 
 private enum FrameQualityAnalyzer {
   private static let context = CIContext(options: [.cacheIntermediates: false])
+  // A low global edge score can mean either motion blur or a valid, low-texture
+  // surface. A frame registered against its neighbour is therefore allowed;
+  // actual camera motion is handled separately using CoreMotion.
+  private static let preferredSharpness = 0.018
 
   static func analyze(data: Data, visualReference: CGImage?, pose: MotionPose?) -> FrameQuality {
     guard
@@ -815,7 +827,6 @@ private enum FrameQualityAnalyzer {
     var reasons: [String] = []
     if brightness < 0.025 || luma.darkRatio > 0.60 { reasons.append("tooDark") }
     if brightness > 0.96 || luma.clippedRatio > 0.18 { reasons.append("overexposed") }
-    if sharpness < 0.018 { reasons.append("blurOrLowTexture") }
     if let pose, pose.rotationRate > 0.15 { reasons.append("motionAtExposure") }
     if let pose, pose.linearAccelerationG > 0.10 { reasons.append("translationRisk") }
     let registrationImage = makeScaledImage(image, maximumDimension: 640)
@@ -826,6 +837,11 @@ private enum FrameQualityAnalyzer {
         ? "homographyValidated"
         : "failed"
       if visualRegistration == "failed" { reasons.append("visualRegistrationFailed") }
+    }
+    let isUnverifiedLowDetailFrame = sharpness < preferredSharpness &&
+      visualRegistration != "homographyValidated"
+    if isUnverifiedLowDetailFrame {
+      reasons.append("blurOrLowTexture")
     }
     return FrameQuality(
       sharpness: sharpness,

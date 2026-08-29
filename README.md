@@ -13,8 +13,9 @@ thức của Google.
 - Camera lưu JPEG ở kích thước tối đa với quality prioritization; app giữ trọn chiều dọc để người dùng chỉ
   cần xoay theo một phương ngang.
 - Lưu frame cục bộ trước, upload bất đồng bộ đến Camera360 stitch server nếu có.
-- Trước ảnh đầu tiên, iOS chờ AE/AF/AWB ổn định rồi khóa các thông số cho cả
-  vòng chụp; ảnh cháy sáng theo tỷ lệ pixel, quá tối, rung hoặc nhòe sẽ bị từ chối.
+- Trước ảnh đầu tiên, iOS chờ AE/AF/AWB ổn định rồi khóa exposure/white balance
+  cho cả vòng; autofocus tiếp tục theo từng hướng. Ảnh cháy sáng, quá tối, rung
+  hoặc nhòe sẽ bị từ chối.
 - Khi chưa đủ vòng, người dùng chọn ảnh ghép ngang hình chữ nhật hoặc panorama
   góc rộng; nếu đủ vòng app tạo panorama 360° ngang. Ảnh chữ nhật dùng image
   viewer phẳng, còn hai loại panorama dùng Photo Sphere Viewer/WebGL với pinch
@@ -200,8 +201,8 @@ Hugin worker thật được khởi chạy từ `POST /v1/sessions/{id}/stitch`.
 Không publish ảnh cho khách chỉ vì job đã tạo được JPEG; chỉ publish tự động khi
 `commercialReady: true`.
 
-Trên iOS, app chờ camera đo sáng/lấy nét ổn định và khóa
-focus/exposure/white balance **trước frame đầu tiên**. Chế độ
+Trên iOS, app chờ camera đo sáng/lấy nét ổn định, khóa exposure/white balance
+**trước frame đầu tiên**, và chờ continuous autofocus trước từng frame. Chế độ
 `balanced-full-resolution` vẫn dùng `maxPhotoDimensions`, nhưng giảm độ trễ
 computational photography để pose/thời điểm sáng không lệch khỏi lúc bấm chụp.
 App còn chặn auto-shutter khi rotation hoặc linear acceleration cao, từ chối

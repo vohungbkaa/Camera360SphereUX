@@ -117,8 +117,10 @@ chuyển từ ảnh cuối về ảnh đầu. Khi chưa hoàn thành vòng, ngư
   sổ sáng, tường trắng, cạnh tủ gần, gương, người di chuyển và ngoại cảnh.
 - Không tự chuyển ultra-wide/wide/tele giữa phiên; toàn bộ frame phải cùng lens.
 - iOS dùng `photoQualityPrioritization: quality` ở kích thước tối đa. Frame có
-  sharpness dưới `0.018` bị yêu cầu chụp lại trước khi stitch; backend kiểm tra
-  lại ngưỡng này để bảo vệ session từ client cũ.
+  sharpness dưới `0.018` vẫn được nhận nếu Vision đối sánh thành công với ảnh
+  liền kề, tránh loại nhầm các vùng ít hoa văn như tường trơn. Ảnh không đối
+  sánh được hoặc có chuyển động lúc bấm máy vẫn bị yêu cầu chụp lại. Backend
+  kiểm tra lại cùng quy tắc.
 - Mã hóa khi truyền/lưu, consent rõ ràng và cơ chế xóa dữ liệu tài sản của khách.
 - Theo dõi crash, capture rejection, upload retry, stitch failure và thời gian
   xử lý; không upload log chứa ảnh hoặc vị trí nếu chưa được đồng ý.

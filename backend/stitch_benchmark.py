@@ -107,10 +107,17 @@ def prepare_inputs(session: Path, destination: Path, maximum_edge: int) -> dict[
         clipped_ratio = float(np.mean(center > 245))
         dark_ratio = float(np.mean(center < 16))
         mean_luma = float(np.mean(center) / 255.0)
-        reasons = list(capture_quality.get("reasons") or [])
+        reasons = [
+            reason
+            for reason in (capture_quality.get("reasons") or [])
+            if reason != "blurOrLowTexture"
+        ]
         client_sharpness = capture_quality.get("sharpness")
-        if client_sharpness is not None and float(client_sharpness) < 0.018:
-            reasons.append("blurOrLowTexture")
+        visual_registration = capture_quality.get("visualRegistration")
+        if client_sharpness is not None:
+            sharpness = float(client_sharpness)
+            if sharpness < 0.018 and visual_registration != "homographyValidated":
+                reasons.append("blurOrLowTexture")
         if clipped_ratio > 0.18 or mean_luma > 0.96:
             reasons.append("overexposed")
         if dark_ratio > 0.60 or mean_luma < 0.025:
@@ -121,7 +128,7 @@ def prepare_inputs(session: Path, destination: Path, maximum_edge: int) -> dict[
             "serverMeanLuma": round(mean_luma, 5),
             "serverDarkPixelRatio": round(dark_ratio, 5),
             "serverClippedHighlightRatio": round(clipped_ratio, 5),
-            "minimumAcceptedSharpness": 0.018,
+            "preferredSharpness": 0.018,
         })
         mapping.append(
             {

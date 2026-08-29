@@ -101,7 +101,34 @@ class StitchInputQualityTest(unittest.TestCase):
 
             self.assertFalse(quality["accepted"])
             self.assertIn("blurOrLowTexture", quality["reasons"])
-            self.assertEqual(quality["minimumAcceptedSharpness"], 0.018)
+            self.assertEqual(quality["preferredSharpness"], 0.018)
+
+    def test_server_accepts_borderline_low_texture_frame_when_registration_succeeds(self) -> None:
+        with TemporaryDirectory() as temporary:
+            session = Path(temporary) / "session"
+            frames = session / "frames"
+            frames.mkdir(parents=True)
+            source = frames / "frame-1.jpg"
+            self.assertTrue(cv.imwrite(str(source), np.full((48, 64, 3), 127, dtype=np.uint8)))
+            (frames / "frame-1.json").write_text(
+                json.dumps({
+                    "capture": {
+                        "quality": {
+                            "accepted": True,
+                            "sharpness": 0.005,
+                            "visualRegistration": "homographyValidated",
+                        },
+                        "intrinsics": {"exifOrientation": 1},
+                    }
+                }),
+                encoding="utf-8",
+            )
+
+            prepared = prepare_inputs(session, Path(temporary) / "prepared", 0)
+            quality = prepared["frames"][0]["captureQuality"]
+
+            self.assertTrue(quality["accepted"])
+            self.assertNotIn("blurOrLowTexture", quality["reasons"])
 
     def test_viewer_config_preserves_hugin_crop_position(self) -> None:
         with TemporaryDirectory() as temporary:
