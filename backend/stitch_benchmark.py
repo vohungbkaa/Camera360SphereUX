@@ -16,9 +16,9 @@ import cv2 as cv
 import numpy as np
 
 try:
-    from .quality_gate import evaluate_quality
+    from .quality_gate import evaluate_quality, parse_control_point_graph
 except ImportError:  # Direct execution: python backend/stitch_benchmark.py
-    from quality_gate import evaluate_quality
+    from quality_gate import evaluate_quality, parse_control_point_graph
 
 
 PROJECT_ROOT = Path(__file__).resolve().parents[1]
@@ -138,12 +138,14 @@ def prepare_inputs(session: Path, destination: Path, maximum_edge: int) -> dict[
         if manifest_path.exists()
         else {}
     )
-    product_type = manifest.get("productType", "360")
+    product_type = manifest.get("productType") or "wide-panorama"
+    if product_type in {"360", "360-horizontal"} or manifest.get("isClosedLoop"):
+        product_type = "horizontal-360"
     result = {
         "sessionId": session.name,
         "productType": product_type,
-        "isFullSphere": bool(manifest.get("isClosedLoop"))
-        or product_type in {"360", "360-horizontal"},
+        "captureMode": manifest.get("captureMode", "horizontal"),
+        "isClosedHorizontalLoop": product_type == "horizontal-360",
         "frameCount": len(mapping),
         "maximumInputEdge": maximum_edge,
         "horizontalFovDegrees": float(np.median(horizontal_fovs)) if horizontal_fovs else 53.5,
@@ -177,7 +179,7 @@ def run_hugin(
     horizontal_fov: float,
     canvas_width: int,
     match_mode: str,
-    is_full_sphere: bool,
+    product_type: str,
 ) -> dict[str, Any]:
     output_dir.mkdir(parents=True, exist_ok=False)
     input_mount = str(inputs.resolve())
@@ -200,7 +202,12 @@ def run_hugin(
     # A horizontal capture ring must retain all source vertical pixels. Do not
     # synthesize a 180-degree canvas with empty zenith/nadir just because yaw
     # closes at 360 degrees; Photo Sphere Viewer receives the crop geometry.
-    output_fov = "360xAUTO"
+    geometry = hugin_output_geometry(product_type, canvas_width)
+    flat_output = product_type == "horizontal-stitch"
+    is_closed_horizontal_loop = product_type == "horizontal-360"
+    output_projection = geometry["projection"]
+    output_fov = geometry["fov"]
+    output_canvas = geometry["canvas"]
     output_crop = "AUTO"
     script = r"""
 set -euo pipefail
@@ -211,8 +218,8 @@ cpfind "$MATCHER" --ransacmode="$RANSAC_MODE" --ransacdist=10 --minmatches=8 \
   -o /output/control-points.pto /output/prealigned.pto
 cpclean --max-distance=1.0 -o /output/clean.pto /output/control-points.pto
 autooptimiser -a -l -m -s -o /output/optimized.pto /output/clean.pto
-pano_modify --straighten --center --projection=2 --fov="$OUTPUT_FOV" \
-  --canvas="$CANVAS_WIDTH"x"$CANVAS_HEIGHT" \
+pano_modify --straighten --center --projection="$OUTPUT_PROJECTION" --fov="$OUTPUT_FOV" \
+  --canvas="$OUTPUT_CANVAS" \
   --crop="$OUTPUT_CROP" \
   --ldr-file=JPG --ldr-compression=100 \
   -o /output/final.pto /output/optimized.pto
@@ -231,15 +238,15 @@ hugin_executor --stitching --prefix=/output/panorama /output/final.pto
         "-e",
         f"HFOV={horizontal_fov}",
         "-e",
-        f"CANVAS_WIDTH={canvas_width}",
-        "-e",
-        f"CANVAS_HEIGHT={canvas_height}",
+        f"OUTPUT_CANVAS={output_canvas}",
         "-e",
         f"MATCHER={matcher}",
         "-e",
         f"RANSAC_MODE={ransac_mode}",
         "-e",
         f"OUTPUT_FOV={output_fov}",
+        "-e",
+        f"OUTPUT_PROJECTION={output_projection}",
         "-e",
         f"OUTPUT_CROP={output_crop}",
         HUGIN_IMAGE,
@@ -271,17 +278,32 @@ hugin_executor --stitching --prefix=/output/panorama /output/final.pto
         "inputFrames": len(list(inputs.glob("sphere-*.jpg"))),
         "usedFrames": count_pto_images(output_dir / "final.pto"),
         "matchMode": match_mode,
-        "outputMode": "full-sphere" if is_full_sphere else "auto-cropped-wide",
+        "outputMode": product_type,
         "controlPointRms": parse_hugin_rms(log_path),
         "output": str(output),
         **image_metrics(output),
     }
-    result["viewerConfig"] = panorama_viewer_config(
-        output_dir / "final.pto", is_closed_loop=is_full_sphere
+    used_frame_names = pto_image_names(output_dir / "final.pto")
+    result["usedFrameNames"] = used_frame_names
+    graph_frame_names = pto_image_names(output_dir / "clean.pto") or used_frame_names
+    graph = parse_control_point_graph(output_dir / "clean.pto", graph_frame_names)
+    quality = evaluate_quality(result, mapping, graph)
+    result["qualityDecision"] = quality
+    result["viewerConfig"] = {} if flat_output else panorama_viewer_config(
+        output_dir / "final.pto", is_closed_loop=is_closed_horizontal_loop
     )
-    result["qualityDecision"] = evaluate_quality(result, mapping)
     write_result(output_dir, result)
     return result
+
+
+def hugin_output_geometry(product_type: str, canvas_width: int) -> dict[str, Any]:
+    if product_type == "horizontal-stitch":
+        return {"projection": 1, "fov": "AUTO", "canvas": "AUTO"}
+    return {
+        "projection": 2,
+        "fov": "360xAUTO",
+        "canvas": f"{canvas_width}x{canvas_width // 2}",
+    }
 
 
 def derive_canvas_width(mapping: dict[str, Any]) -> int:
@@ -297,6 +319,19 @@ def count_pto_images(path: Path) -> int:
     if not path.exists():
         return 0
     return sum(1 for line in path.read_text(encoding="utf-8", errors="replace").splitlines() if line.startswith("i "))
+
+
+def pto_image_names(path: Path) -> list[str]:
+    names = []
+    if not path.exists():
+        return names
+    for line in path.read_text(encoding="utf-8", errors="replace").splitlines():
+        if not line.startswith("i "):
+            continue
+        match = re.search(r'n"([^"]+)"', line)
+        if match:
+            names.append(Path(match.group(1)).name)
+    return names
 
 
 def panorama_viewer_config(path: Path, *, is_closed_loop: bool) -> dict[str, Any]:
@@ -472,7 +507,7 @@ def main() -> int:
             prepared["huginInputFovDegrees"],
             args.canvas_width,
             args.hugin_match,
-            prepared["isFullSphere"],
+            prepared["productType"],
         )
         results.append(result)
         print(f"[hugin] completed in {result['seconds']}s: {result['output']}", flush=True)

@@ -6,7 +6,12 @@ import unittest
 import cv2 as cv
 import numpy as np
 
-from stitch_benchmark import derive_canvas_width, panorama_viewer_config, prepare_inputs
+from stitch_benchmark import (
+    derive_canvas_width,
+    hugin_output_geometry,
+    panorama_viewer_config,
+    prepare_inputs,
+)
 
 
 class StitchInputQualityTest(unittest.TestCase):
@@ -43,7 +48,8 @@ class StitchInputQualityTest(unittest.TestCase):
             self.assertEqual(prepared["maximumInputEdge"], 0)
             self.assertEqual(prepared["frames"][0]["preparedHeight"], 48)
             self.assertEqual(prepared["huginInputFovDegrees"], 55)
-            self.assertTrue(prepared["isFullSphere"])
+            self.assertEqual(prepared["captureMode"], "horizontal")
+            self.assertTrue(prepared["isClosedHorizontalLoop"])
 
     def test_untouched_portrait_exif_uses_encoded_axis_fov(self) -> None:
         with TemporaryDirectory() as temporary:
@@ -96,6 +102,15 @@ class StitchInputQualityTest(unittest.TestCase):
             self.assertEqual(config["minimumPitchDegrees"], -45.0)
             self.assertEqual(config["maximumPitchDegrees"], 45.0)
 
+    def test_flat_horizontal_output_uses_cylindrical_auto_crop_geometry(self) -> None:
+        flat = hugin_output_geometry("horizontal-stitch", 20000)
+        panorama = hugin_output_geometry("wide-panorama", 20000)
+
+        self.assertEqual(flat, {"projection": 1, "fov": "AUTO", "canvas": "AUTO"})
+        self.assertEqual(
+            panorama,
+            {"projection": 2, "fov": "360xAUTO", "canvas": "20000x10000"},
+        )
 
 if __name__ == "__main__":
     unittest.main()

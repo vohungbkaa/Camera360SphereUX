@@ -500,30 +500,54 @@ class _CaptureScreenState extends State<CaptureScreen> {
   }
 
   Future<void> finishCapture() async {
-    if (capturedTargets.isEmpty || isCapturing) return;
-    final isFullSphere = capturedTargets.length == targets.length;
-    if (!isFullSphere) {
-      final stitchWide = await showDialog<bool>(
+    if (capturedTargets.length < 2 || isCapturing) return;
+    final isClosedLoop = capturedTargets.length == targets.length;
+    var productType = 'horizontal-360';
+    if (!isClosedLoop) {
+      final selected = await showDialog<String>(
         context: context,
-        builder: (context) => AlertDialog(
-          title: const Text('Chưa đủ một vòng 360°'),
-          content: Text(
-            'Bạn mới chụp ${capturedTargets.length}/${targets.length} hướng. '
-            'Nếu ghép ngay, kết quả chỉ là panorama góc rộng, không thể quay đủ 360°.',
-          ),
-          actions: [
-            TextButton(
-              onPressed: () => Navigator.pop(context, false),
-              child: const Text('Tiếp tục chụp'),
+        builder: (context) => SimpleDialog(
+          title: const Text('Chọn kiểu ghép'),
+          children: [
+            Padding(
+              padding: const EdgeInsets.fromLTRB(24, 0, 24, 12),
+              child: Text(
+                'Bạn đã chụp ${capturedTargets.length}/${targets.length} điểm. '
+                'Có thể ghép ngay hoặc tiếp tục chụp để hoàn thành vòng 360°.',
+                style: const TextStyle(color: Color(0xFF9AAEC3)),
+              ),
             ),
-            FilledButton(
-              onPressed: () => Navigator.pop(context, true),
-              child: const Text('Ghép góc rộng'),
+            SimpleDialogOption(
+              onPressed: () => Navigator.pop(context, 'horizontal-stitch'),
+              child: const ListTile(
+                contentPadding: EdgeInsets.zero,
+                leading: Icon(Icons.photo_size_select_large_rounded),
+                title: Text('Ghép hình chữ nhật'),
+                subtitle: Text('Ảnh phẳng để xem toàn bộ vật thể dài'),
+              ),
+            ),
+            SimpleDialogOption(
+              onPressed: () => Navigator.pop(context, 'wide-panorama'),
+              child: const ListTile(
+                contentPadding: EdgeInsets.zero,
+                leading: Icon(Icons.panorama_horizontal_rounded),
+                title: Text('Ghép góc rộng'),
+                subtitle: Text('Panorama tương tác trong vùng đã chụp'),
+              ),
+            ),
+            SimpleDialogOption(
+              onPressed: () => Navigator.pop(context),
+              child: const ListTile(
+                contentPadding: EdgeInsets.zero,
+                leading: Icon(Icons.add_a_photo_rounded),
+                title: Text('Tiếp tục chụp'),
+              ),
             ),
           ],
         ),
       );
-      if (stitchWide != true || !mounted) return;
+      if (selected == null || !mounted) return;
+      productType = selected;
     }
     String? jobId;
     String? submitError;
@@ -543,8 +567,8 @@ class _CaptureScreenState extends State<CaptureScreen> {
               },
             )
             .toList(),
-        productType: isFullSphere ? '360-horizontal' : 'wide-panorama',
-        isClosedLoop: isFullSphere,
+        productType: productType,
+        isClosedLoop: isClosedLoop,
       );
       jobId = await server.startStitch();
       if (jobId == null) throw StateError('Backend không trả về mã xử lý.');
@@ -563,7 +587,7 @@ class _CaptureScreenState extends State<CaptureScreen> {
         context,
         MaterialPageRoute(
           builder: (_) => ProcessingScreen(
-            isFullSphere: isFullSphere,
+            productType: productType,
             server: server,
             jobId: jobId,
             initialError: submitError,
@@ -701,8 +725,7 @@ class _CaptureScreenState extends State<CaptureScreen> {
                     if (capturedTargets.isNotEmpty)
                       _DoneProgressButton(
                         progress: capturedTargets.length / targets.length,
-                        isFullSphere: capturedTargets.length == targets.length,
-                        enabled: !isCapturing,
+                        enabled: !isCapturing && capturedTargets.length >= 2,
                         onPressed: finishCapture,
                       ),
                     Align(
@@ -891,12 +914,10 @@ class _CaptureMessage extends StatelessWidget {
 class _DoneProgressButton extends StatelessWidget {
   const _DoneProgressButton({
     required this.progress,
-    required this.isFullSphere,
     required this.enabled,
     required this.onPressed,
   });
   final double progress;
-  final bool isFullSphere;
   final bool enabled;
   final VoidCallback onPressed;
   @override
@@ -922,9 +943,7 @@ class _DoneProgressButton extends StatelessWidget {
               disabledBackgroundColor: const Color(0xAAFFA000),
             ),
             iconSize: 36,
-            tooltip: isFullSphere
-                ? 'Hoàn thành ảnh 360°'
-                : 'Hoàn thành panorama góc rộng',
+            tooltip: enabled ? 'Hoàn thành chụp' : 'Cần ít nhất 2 ảnh để ghép',
             icon: const Icon(Icons.check_rounded, color: Colors.white),
           ),
         ),
@@ -1100,14 +1119,14 @@ class _TargetPainter extends CustomPainter {
 
 class ProcessingScreen extends StatefulWidget {
   const ProcessingScreen({
-    required this.isFullSphere,
+    required this.productType,
     required this.server,
     required this.jobId,
     this.initialError,
     super.key,
   });
 
-  final bool isFullSphere;
+  final String productType;
   final ServerSessionClient server;
   final String? jobId;
   final String? initialError;
@@ -1179,11 +1198,9 @@ class _ProcessingScreenState extends State<ProcessingScreen> {
               color: Color(0xFF7CE2FF),
             ),
             const SizedBox(height: 24),
-            Text(
-              widget.isFullSphere
-                  ? 'Đang tạo Sphere'
-                  : 'Đang ghép panorama góc rộng',
-              style: const TextStyle(fontSize: 25, fontWeight: FontWeight.w800),
+            const Text(
+              'Đang ghép ảnh',
+              style: TextStyle(fontSize: 25, fontWeight: FontWeight.w800),
             ),
             const SizedBox(height: 8),
             const Text(
@@ -1222,7 +1239,7 @@ class _ProcessingScreenState extends State<ProcessingScreen> {
                   context,
                   MaterialPageRoute(
                     builder: (_) => ViewerScreen(
-                      isFullSphere: widget.isFullSphere,
+                      productType: widget.productType,
                       panoramaUri: widget.server.panoramaUri(widget.jobId!),
                       viewerConfig: viewerConfig,
                       qualityWarning: status == 'needs_review'
@@ -1232,11 +1249,19 @@ class _ProcessingScreenState extends State<ProcessingScreen> {
                   ),
                 ),
                 icon: Icon(
-                  widget.isFullSphere
-                      ? Icons.threesixty_rounded
-                      : Icons.panorama_horizontal_rounded,
+                  widget.productType == 'horizontal-stitch'
+                      ? Icons.photo_size_select_large_rounded
+                      : widget.productType == 'wide-panorama'
+                      ? Icons.panorama_horizontal_rounded
+                      : Icons.threesixty_rounded,
                 ),
-                label: Text(widget.isFullSphere ? 'Mở Sphere' : 'Mở panorama'),
+                label: Text(
+                  widget.productType == 'horizontal-stitch'
+                      ? 'Mở ảnh ghép ngang'
+                      : widget.productType == 'wide-panorama'
+                      ? 'Mở panorama góc rộng'
+                      : 'Mở panorama 360°',
+                ),
               ),
             ],
           ],
@@ -1260,14 +1285,14 @@ String? _qualityWarning(Map<String, dynamic>? decision) {
 
 class ViewerScreen extends StatelessWidget {
   const ViewerScreen({
-    required this.isFullSphere,
+    required this.productType,
     required this.panoramaUri,
     required this.viewerConfig,
     this.qualityWarning,
     super.key,
   });
 
-  final bool isFullSphere;
+  final String productType;
   final Uri panoramaUri;
   final Map<String, dynamic> viewerConfig;
   final String? qualityWarning;
@@ -1276,7 +1301,13 @@ class ViewerScreen extends StatelessWidget {
     backgroundColor: Colors.black,
     appBar: AppBar(
       backgroundColor: Colors.black,
-      title: Text(isFullSphere ? 'Sphere của bạn' : 'Panorama của bạn'),
+      title: Text(
+        productType == 'horizontal-stitch'
+            ? 'Ảnh ghép ngang'
+            : productType == 'horizontal-360'
+            ? 'Panorama 360° ngang'
+            : 'Panorama góc rộng',
+      ),
       actions: [
         IconButton(onPressed: () {}, icon: const Icon(Icons.ios_share_rounded)),
       ],
@@ -1284,7 +1315,10 @@ class ViewerScreen extends StatelessWidget {
     body: Stack(
       fit: StackFit.expand,
       children: [
-        PanoramaViewer(uri: panoramaUri, viewerConfig: viewerConfig),
+        if (productType == 'horizontal-stitch')
+          _FlatHorizontalImage(uri: panoramaUri)
+        else
+          PanoramaViewer(uri: panoramaUri, viewerConfig: viewerConfig),
         if (qualityWarning != null)
           SafeArea(
             child: Align(
@@ -1304,6 +1338,30 @@ class ViewerScreen extends StatelessWidget {
             ),
           ),
       ],
+    ),
+  );
+}
+
+class _FlatHorizontalImage extends StatelessWidget {
+  const _FlatHorizontalImage({required this.uri});
+
+  final Uri uri;
+
+  @override
+  Widget build(BuildContext context) => InteractiveViewer(
+    minScale: 0.8,
+    maxScale: 5,
+    boundaryMargin: const EdgeInsets.all(80),
+    child: Center(
+      child: Image.network(
+        uri.toString(),
+        fit: BoxFit.contain,
+        loadingBuilder: (context, child, progress) => progress == null
+            ? child
+            : const Center(child: CircularProgressIndicator()),
+        errorBuilder: (context, error, stackTrace) =>
+            const Center(child: Text('Không thể mở ảnh ghép ngang.')),
+      ),
     ),
   );
 }

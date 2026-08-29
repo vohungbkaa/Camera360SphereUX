@@ -31,9 +31,11 @@ class SessionCreate(BaseModel):
 
 
 class CompleteRequest(BaseModel):
-    schemaVersion: str
-    productType: str
-    isClosedLoop: bool
+    schemaVersion: str = "2.1.0"
+    captureMode: str = "horizontal"
+    # Accepted for older mobile clients; output selection now happens after stitch.
+    productType: str | None = None
+    isClosedLoop: bool | None = None
     frames: list[dict[str, Any]]
 
 
@@ -182,6 +184,9 @@ def run_stitch_job(directory: Path, job_path: Path, job_id: str) -> None:
                 "qualityStatus": quality.get("status", "UNKNOWN"),
                 "qualityDecision": quality,
                 "viewerConfig": result.get("viewerConfig", {}),
+                "captureChainStatus": quality.get("captureChainStatus", "unknown"),
+                "wrapBoundaryStatus": quality.get("wrapBoundaryStatus", "unknown"),
+                "horizontalCoverageDegrees": quality.get("horizontalCoverageDegrees"),
                 "panoramaPath": result.get("output"),
                 "reportPath": str(report_path),
             })
@@ -195,8 +200,18 @@ def run_stitch_job(directory: Path, job_path: Path, job_id: str) -> None:
 @app.post("/v1/sessions/{session_id}/stitch")
 def start_stitch(session_id: str, background_tasks: BackgroundTasks) -> dict[str, Any]:
     directory = require_session(session_id)
-    if not (directory / "manifest.json").exists():
+    manifest_path = directory / "manifest.json"
+    if not manifest_path.exists():
         raise HTTPException(409, "Complete the capture before stitching")
+    manifest = json.loads(manifest_path.read_text(encoding="utf-8"))
+    frame_ids = {
+        str(frame.get("id")) for frame in manifest.get("frames", []) if frame.get("id")
+    }
+    uploaded = {
+        path.stem for path in (directory / "frames").glob("*.jpg")
+    }
+    if len(frame_ids & uploaded) < 2:
+        raise HTTPException(422, "At least two uploaded frames are required for stitching")
     job_id = f"stitch-{uuid.uuid4()}"
     job = {
         "id": job_id,

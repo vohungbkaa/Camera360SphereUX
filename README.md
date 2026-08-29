@@ -15,10 +15,10 @@ thức của Google.
 - Lưu frame cục bộ trước, upload bất đồng bộ đến Camera360 stitch server nếu có.
 - Trước ảnh đầu tiên, iOS chờ AE/AF/AWB ổn định rồi khóa các thông số cho cả
   vòng chụp; ảnh cháy sáng theo tỷ lệ pixel, quá tối, rung hoặc nhòe sẽ bị từ chối.
-- Khi hoàn tất, app theo dõi Hugin job thật và mở panorama bằng Photo Sphere
-  Viewer/WebGL: kéo đổi hướng nhìn theo phối cảnh cầu, pinch zoom, recenter và
-  điều khiển bằng gyroscope. Panorama góc rộng được giới hạn đúng vùng đã chụp,
-  không bị kéo giãn giả thành 360°.
+- Khi chưa đủ vòng, người dùng chọn ảnh ghép ngang hình chữ nhật hoặc panorama
+  góc rộng; nếu đủ vòng app tạo panorama 360° ngang. Ảnh chữ nhật dùng image
+  viewer phẳng, còn hai loại panorama dùng Photo Sphere Viewer/WebGL với pinch
+  zoom, recenter và gyroscope.
 
 ## Chạy backend capture mới
 

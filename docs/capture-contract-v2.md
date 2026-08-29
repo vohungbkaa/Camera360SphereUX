@@ -68,6 +68,32 @@ và intrinsics thật trong `capture` làm initial estimate cho bundle adjustmen
   chứa các frame còn hiệu lực.
 - Server phải idempotent theo `frameId`; retry upload không được tạo frame trùng.
 
+Từ schema `2.1.0`, capture ngang ghi rõ kiểu output trước khi stitch:
+
+```json
+{
+  "schemaVersion": "2.1.0",
+  "captureMode": "horizontal",
+  "productType": "horizontal-stitch",
+  "isClosedLoop": false,
+  "frames": []
+}
+```
+
+Các output được hỗ trợ:
+
+- `horizontal-stitch`: projection cylindrical auto-crop, xuất JPEG hình chữ nhật và xem
+  bằng image viewer phẳng;
+- `wide-panorama`: projection panorama, xem tương tác với yaw giới hạn tại hai
+  mép coverage;
+- `horizontal-360`: panorama đã hoàn thành vòng ngang, yaw quay vòng 360°.
+
+Mọi cặp ảnh liền kề trong dải đã chụp phải có visual match sau `cpclean`.
+`captureChainStatus` mô tả seam nội bộ; `wrapBoundaryStatus` chỉ mô tả điểm
+chuyển từ ảnh cuối về ảnh đầu. Khi chưa hoàn thành vòng, người dùng chọn
+`horizontal-stitch`, `wide-panorama` hoặc tiếp tục chụp. `horizontal-360` chỉ
+được chọn tự động khi đã chụp đủ vòng target ngang.
+
 ## Pipeline stitch yêu cầu
 
 1. Decode JPEG và chuẩn hóa EXIF orientation, nhưng giữ ảnh gốc để render cuối.

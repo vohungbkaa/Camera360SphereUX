@@ -80,7 +80,8 @@ final class ServerSessionClient {
       baseUrl.resolve('/v1/sessions/$sessionId/complete'),
       headers: {'Content-Type': 'application/json'},
       body: jsonEncode({
-        'schemaVersion': '2.0.0',
+        'schemaVersion': '2.1.0',
+        'captureMode': 'horizontal',
         'productType': productType,
         'isClosedLoop': isClosedLoop,
         'frames': frames,

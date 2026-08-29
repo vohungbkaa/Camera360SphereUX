@@ -40,6 +40,12 @@ matching bị tách, bỏ frame, frame rung/mờ hoặc metadata capture lỗi s
 `needs_review`, `RECAPTURE` hoặc `failed`; backend không coi việc sinh được JPEG
 là thành công thương mại.
 
+Manifest chọn một trong ba output: `horizontal-stitch` dùng projection
+cylindrical auto-crop và image viewer phẳng; `wide-panorama` dùng projection panorama với
+hai mép yaw; `horizontal-360` dành cho vòng target ngang đã hoàn thành. Dù chọn
+output nào, các ảnh liền kề phải tạo thành `captureChainStatus: connected`.
+`wrapBoundaryStatus` chỉ mô tả visual match giữa ảnh cuối và ảnh đầu.
+
 Worker production truyền `--input-max-edge 0`: JPEG upload được sao chép nguyên
 byte vào Hugin, không resize hoặc re-encode. `--canvas-width 0` tự suy ra canvas
 từ chiều cao ảnh nguồn/vertical FOV; vòng chụp ngang 360° được auto-crop theo
